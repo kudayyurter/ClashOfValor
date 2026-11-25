@@ -13,6 +13,7 @@
 
 mod anim;
 mod ascii;
+mod effects;
 mod flow;
 mod models;
 mod rules;
@@ -24,7 +25,8 @@ use macroquad::prelude::*;
 use rayon::prelude::*;
 use flow::{Flow, Input, Screen};
 use rules::Class;
-use scene::{ACCENTS, METALS, Scene};
+use effects::{Fx, Kind};
+use scene::{ACCENTS, FX_ID, METALS, Mat, Part, Scene, Shape};
 
 const BG: Color = Color::new(0.035, 0.035, 0.07, 1.0);
 const SIZES: [u16; 3] = [12, 16, 22];
@@ -99,31 +101,56 @@ fn parse_args() -> Args {
     a
 }
 
-struct Ember {
-    p: Vec3,
-    v: Vec3,
-    life: f32,
-    max: f32,
+/// The world-side state that follows the duel: fighter bodies and effects.
+struct World {
+    scene: Scene,
+    fx: Fx,
+    staged: [Class; 2],
 }
 
-fn update_embers(embers: &mut Vec<Ember>, scene: &Scene, dt: f32) {
-    let n = (dt * 35.0 + rand::gen_range(0.0, 1.0)) as usize;
-    for _ in 0..n {
-        embers.push(Ember {
-            p: scene.fire + vec3(rand::gen_range(-0.15, 0.15), 0.35, rand::gen_range(-0.15, 0.15)),
-            v: vec3(rand::gen_range(-0.3, 0.3), rand::gen_range(0.8, 1.8), rand::gen_range(-0.3, 0.3)),
-            life: 0.0,
-            max: rand::gen_range(0.8, 2.0),
-        });
+impl World {
+    /// One simulation step. `advance` moves the duel's animation on (screenshots freeze it).
+    fn tick(&mut self, flow: &mut Flow, dt: f32, advance: bool) {
+        // Effects first, so an impact fired by a skip this frame is still seen while the
+        // move is on screen.
+        let impact = flow.take_impact();
+        if let Screen::Animate { action, .. } = &flow.screen {
+            self.fx.on_action(action, &self.scene.bodies, dt, impact);
+        } else {
+            self.fx.orb = None;
+        }
+        if advance {
+            flow.update(dt);
+        }
+        let (classes, _) = flow.preview();
+        if classes != self.staged {
+            self.scene.set_fighters(classes);
+            self.staged = classes;
+        }
+        let gap = (self.scene.bodies[1].pos - self.scene.bodies[0].pos).length();
+        let (poses, dims) = flow.body_state(self.scene.time, gap);
+        for (i, ((b, p), d)) in self.scene.bodies.iter_mut().zip(poses).zip(dims).enumerate() {
+            // A little dust when a fallen fighter hits the ground.
+            if b.pose.fall < 0.99 && p.fall >= 0.99 {
+                self.fx.burst(b.to_world(vec3(0.0, 0.05, -1.0)), 18, Kind::Smoke, vec3(0.5, 0.45, 0.4));
+            }
+            b.pose = p;
+            b.dim = d;
+            self.fx.ward[i] = match &flow.shown {
+                Some(shown) if shown[i].shield > 0 && d < 0.99 => 1.0,
+                _ => 0.0,
+            };
+        }
+        self.scene.fx_parts = self
+            .fx
+            .orb
+            .map(|c| Part { id: FX_ID, mat: Mat::Orb, shape: Shape::Sphere { c, r: 0.16 } })
+            .into_iter()
+            .collect();
+        self.scene.update(dt);
+        self.fx.campfire(self.scene.fire, self.scene.time, dt);
+        self.fx.update(dt);
     }
-    for e in embers.iter_mut() {
-        e.life += dt;
-        e.v.x += (scene.time * 3.0 + e.p.y * 4.0).sin() * dt * 0.8;
-        e.v *= 1.0 - 0.6 * dt;
-        e.v.y += 0.6 * dt;
-        e.p += e.v * dt;
-    }
-    embers.retain(|e| e.life < e.max);
 }
 
 /// This frame's key presses as flow inputs. A digit arrives as both `Digit` and `Char`;
@@ -209,6 +236,18 @@ async fn main() {
         Some(classes) => Flow::with_duel(["Player 1", "Player 2"], classes),
         None => Flow::new(),
     };
+    let mut world = World { scene: Scene::new(), fx: Fx::default(), staged: flow.preview().0 };
+    world.scene.set_fighters(world.staged);
+    for b in &mut world.scene.bodies {
+        b.metal = args.metal % METALS.len();
+    }
+    const STEP: f32 = 1.0 / 60.0;
+    if args.shot.is_some() {
+        // Warm up the ember stream before the capture.
+        for _ in 0..90 {
+            world.tick(&mut flow, STEP, false);
+        }
+    }
     // Scripted moves play out fully, except that `--at` freezes the last one part-way.
     for (n, &m) in args.moves.iter().enumerate() {
         let ok = matches!(&flow.screen, Screen::Choose { menu } if (m as usize).checked_sub(1).is_some_and(|i| menu.enabled.get(i) == Some(&true)));
@@ -223,8 +262,8 @@ async fn main() {
                 let target = at.clamp(0.0, 1.0) * action.dur;
                 let mut t = 0.0;
                 while t + 1e-4 < target {
-                    let step = (target - t).min(1.0 / 60.0);
-                    flow.update(step);
+                    let step = (target - t).min(STEP);
+                    world.tick(&mut flow, step, true);
                     t += step;
                 }
             }
@@ -233,33 +272,18 @@ async fn main() {
                     if !matches!(flow.screen, Screen::Animate { .. }) {
                         break;
                     }
-                    flow.update(1.0 / 60.0);
+                    world.tick(&mut flow, STEP, true);
                 }
             }
         }
-        flow.take_impact();
     }
     let mut script: std::collections::VecDeque<char> = args.keys.chars().collect();
-    let mut scene = Scene::new();
-    let mut staged = flow.preview().0;
-    scene.set_fighters(staged);
-    for b in &mut scene.bodies {
-        b.metal = args.metal % METALS.len();
-    }
     let mut bars: Option<[[f32; 3]; 2]> = None;
     let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
     let mut opts = Opts { edges: !args.noedges, fine: true };
-    let mut embers: Vec<Ember> = Vec::new();
     let mut last_mouse: Vec2 = mouse_position().into();
     let mut frame = 0u32;
-    if args.shot.is_some() {
-        // Warm up the ember stream before the capture.
-        for _ in 0..90 {
-            scene.update(1.0 / 60.0);
-            update_embers(&mut embers, &scene, 1.0 / 60.0);
-        }
-    }
 
     loop {
         // Screenshot mode uses a fixed step: a hidden window may only get 1 frame per second.
@@ -273,21 +297,8 @@ async fn main() {
             break;
         }
         // Screenshots are frozen at the scripted moment.
-        if args.shot.is_none() {
-            flow.update(dt);
-        }
-        let _impact = flow.take_impact();
-        let (classes, _) = flow.preview();
-        if classes != staged {
-            scene.set_fighters(classes);
-            staged = classes;
-        }
-        let gap = (scene.bodies[1].pos - scene.bodies[0].pos).length();
-        let (poses, dims) = flow.body_state(scene.time, gap);
-        for ((b, p), d) in scene.bodies.iter_mut().zip(poses).zip(dims) {
-            b.pose = p;
-            b.dim = d;
-        }
+        world.tick(&mut flow, dt, args.shot.is_none());
+        let scene = &mut world.scene;
         let active = flow.active();
         let hotkeys = !flow.typing() && args.shot.is_none();
         let m: Vec2 = mouse_position().into();
@@ -333,8 +344,6 @@ async fn main() {
             }
             b
         });
-        scene.update(dt);
-        update_embers(&mut embers, &scene, dt);
 
         // ---- camera and grid ---------------------------------------------------
         let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.45, 0.0);
@@ -412,29 +421,21 @@ async fn main() {
             }
         }
 
-        // Embers are free-floating glyphs (not snapped to the grid), depth-tested
+        // Effects are free-floating glyphs (not snapped to the grid), depth-tested
         // against the coarse cells.
-        for e in &embers {
-            let Some((sp, depth)) = cam.project(e.p) else { continue };
-            let (cx, cy) = ((sp.x / cw) as usize, (sp.y / ch) as usize);
-            if cx >= cols || cy >= rows {
-                continue;
+        let depth_at = |x: f32, y: f32| {
+            let (cx, cy) = ((x / cw) as usize, (y / ch) as usize);
+            if x < 0.0 || y < 0.0 || cx >= cols || cy >= rows {
+                return f32::MAX;
             }
-            let wall = match coarse[cy * cols + cx] {
+            match coarse[cy * cols + cx] {
                 CellOut::Glyph(c) => c.depth,
                 CellOut::Empty(d) => d,
                 CellOut::Defer => f32::MAX,
-            };
-            if depth > wall + 0.2 {
-                continue;
             }
-            let f = e.life / e.max;
-            let g = if f < 0.33 { '*' } else if f < 0.66 { 'o' } else { '.' };
-            let col = Color::new(1.0, 0.85 - 0.6 * f, 0.35 - 0.3 * f, 1.0 - f * 0.7);
-            draw_circle(sp.x, sp.y, ch * 0.9, Color::new(1.0, 0.5, 0.15, 0.08 * (1.0 - f)));
-            let size = ((fs as f32) * 5.0 / depth).clamp(6.0, 28.0) as u16;
-            draw_glyph(&font, g, sp.x - size as f32 * 0.3, sp.y + size as f32 * 0.35, size, col);
-        }
+        };
+        let chests = [0, 1].map(|i| scene.bodies[i].to_world(scene.bodies[i].anchors.chest));
+        effects::draw(&world.fx, &cam, &depth_at, &font, fs, chests);
 
         // Name tag over each fighter, in their accent colour; a marker over the active one.
         let names = flow.names();

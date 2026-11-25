@@ -19,7 +19,7 @@ pub struct Cam {
     pub pos: Vec3,
     fwd: Vec3,
     pub right: Vec3,
-    up: Vec3,
+    pub up: Vec3,
     tan_half: f32,
     aspect: f32,
     w: f32,
