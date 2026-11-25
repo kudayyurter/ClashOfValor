@@ -215,7 +215,7 @@ impl Duel {
         let n = self.f[me].name.clone();
         let t = self.f[them].name.clone();
 
-        let mut hit = |duel: &mut Duel, amount: i32, crit: bool, events: &mut Vec<Event>, narration: &mut Vec<String>| {
+        let hit = |duel: &mut Duel, amount: i32, crit: bool, events: &mut Vec<Event>, narration: &mut Vec<String>| {
             let target = &mut duel.f[them];
             let (absorbed, damage) = target.take_damage(amount);
             events.push(Event::Hit { target: them, absorbed, damage, crit });

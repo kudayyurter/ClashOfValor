@@ -1,31 +1,50 @@
-//! Clash of Valor 3D: prototype of a 3D ASCII renderer for the next Clash of Valor.
+//! Clash of Valor 3D: a turn-based duel drawn entirely in glyphs.
 //!
 //! Per frame:
-//!   1. Update the world (player, walk cycle, embers).
+//!   1. Input goes to the duel flow (flow.rs); the world updates (poses, embers).
 //!   2. Coarse pass: one glyph per big cell, sampled in parallel with rayon.
 //!      Cells that touch the hero are deferred.
 //!   3. Fine pass: each deferred cell is split 2x2 and resampled, hero only.
 //!   4. Draw: glow halos, coarse glyphs, fine glyphs, free-floating ember glyphs, UI.
+//!
+//! `--shot out.png` renders one frame to a PNG and exits. With `--duel a,b` the duel
+//! starts without setup; `--moves 1,2` plays menu choices first; `--keys` types
+//! scripted keys (one per frame; `|` Enter, `<` Up, `>` Down, `#` Backspace).
 
 mod ascii;
+mod flow;
 mod models;
 mod rules;
 mod scene;
+mod ui;
 
 use ascii::{Cam, CellOut, Opts, Pass, sample_cell};
 use macroquad::prelude::*;
 use rayon::prelude::*;
+use flow::{Flow, Input, Screen};
 use rules::Class;
-use scene::{METALS, Scene};
+use scene::{ACCENTS, METALS, Scene};
 
 const BG: Color = Color::new(0.035, 0.035, 0.07, 1.0);
 const SIZES: [u16; 3] = [12, 16, 22];
 
+/// `--size WxH` sets the window size (read here because `conf` runs before `main`).
+fn window_size() -> (i32, i32) {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|a| a == "--size")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+        .unwrap_or((1280, 800))
+}
+
 fn conf() -> Conf {
+    let (w, h) = window_size();
     Conf {
         window_title: "Clash of Valor".to_owned(),
-        window_width: 1280,
-        window_height: 800,
+        window_width: w,
+        window_height: h,
         platform: miniquad::conf::Platform {
             linux_backend: miniquad::conf::LinuxBackend::WaylandWithX11Fallback,
             ..Default::default()
@@ -39,7 +58,9 @@ struct Args {
     yaw: f32,
     dist: f32,
     metal: usize,
-    duel: [Class; 2],
+    duel: Option<[Class; 2]>,
+    moves: Vec<u8>,
+    keys: String,
     noedges: bool,
 }
 
@@ -48,7 +69,7 @@ fn parse_class(s: &str) -> Option<Class> {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: [Class::Warrior, Class::Sorcerer], noedges: false };
+    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), noedges: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -59,13 +80,15 @@ fn parse_args() -> Args {
                 let v = it.next().unwrap_or_default();
                 let c: Vec<Class> = v.split(',').filter_map(parse_class).collect();
                 if c.len() == 2 {
-                    a.duel = [c[0], c[1]];
+                    a.duel = Some([c[0], c[1]]);
                 } else {
                     eprintln!("--duel wants two of warrior,assassin,sorcerer (got {v:?})");
                     std::process::exit(2);
                 }
             }
             "--noedges" => a.noedges = true,
+            "--moves" => a.moves = it.next().unwrap_or_default().split(',').filter_map(|m| m.trim().parse().ok()).collect(),
+            "--keys" => a.keys = it.next().unwrap_or_default(),
             "--metal" => a.metal = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             _ => {}
         }
@@ -100,6 +123,72 @@ fn update_embers(embers: &mut Vec<Ember>, scene: &Scene, dt: f32) {
     embers.retain(|e| e.life < e.max);
 }
 
+/// This frame's key presses as flow inputs. A digit arrives as both `Digit` and `Char`;
+/// the flow uses whichever fits the screen.
+fn read_inputs() -> Vec<Input> {
+    let mut v = Vec::new();
+    let keys = [
+        (KeyCode::Up, Input::Up),
+        (KeyCode::Down, Input::Down),
+        (KeyCode::Enter, Input::Enter),
+        (KeyCode::KpEnter, Input::Enter),
+        (KeyCode::Space, Input::Space),
+        (KeyCode::Backspace, Input::Backspace),
+        (KeyCode::Escape, Input::Esc),
+    ];
+    for (k, i) in keys {
+        if is_key_pressed(k) {
+            v.push(i);
+        }
+    }
+    let digits = [
+        (KeyCode::Key1, KeyCode::Kp1),
+        (KeyCode::Key2, KeyCode::Kp2),
+        (KeyCode::Key3, KeyCode::Kp3),
+        (KeyCode::Key4, KeyCode::Kp4),
+        (KeyCode::Key5, KeyCode::Kp5),
+        (KeyCode::Key6, KeyCode::Kp6),
+        (KeyCode::Key7, KeyCode::Kp7),
+        (KeyCode::Key8, KeyCode::Kp8),
+        (KeyCode::Key9, KeyCode::Kp9),
+    ];
+    for (n, (a, b)) in digits.iter().enumerate() {
+        if is_key_pressed(*a) || is_key_pressed(*b) {
+            v.push(Input::Digit(n as u8 + 1));
+        }
+    }
+    while let Some(c) = get_char_pressed() {
+        if !c.is_control() {
+            v.push(Input::Char(c));
+        }
+    }
+    v
+}
+
+/// One scripted `--keys` character as one frame of input, the way `read_inputs` would
+/// report the key.
+fn scripted(c: char) -> Vec<Input> {
+    match c {
+        '|' => vec![Input::Enter],
+        '<' => vec![Input::Up],
+        '>' => vec![Input::Down],
+        '#' => vec![Input::Backspace],
+        '1'..='9' => vec![Input::Digit(c as u8 - b'0'), Input::Char(c)],
+        ' ' => vec![Input::Space, Input::Char(' ')],
+        _ => vec![Input::Char(c)],
+    }
+}
+
+/// Health, stamina and class-bar values for a fighter's panel.
+fn bar_targets(f: &rules::Fighter) -> [f32; 3] {
+    let extra = match f.class {
+        Class::Warrior => f.shield,
+        Class::Sorcerer => f.mana,
+        Class::Assassin => 0,
+    };
+    [f.health as f32, f.stamina as f32, extra as f32]
+}
+
 fn glyph_str(c: char, buf: &mut [u8; 4]) -> &str {
     c.encode_utf8(buf)
 }
@@ -113,13 +202,26 @@ fn draw_glyph(font: &Font, c: char, x: f32, baseline: f32, size: u16, color: Col
 async fn main() {
     let args = parse_args();
     let font = load_ttf_font_from_bytes(include_bytes!("../assets/mono.ttf")).expect("font");
+    let mut flow = match args.duel {
+        Some(classes) => Flow::with_duel(["Player 1", "Player 2"], classes),
+        None => Flow::new(),
+    };
+    for &m in &args.moves {
+        let ok = matches!(&flow.screen, Screen::Choose { menu } if (m as usize).checked_sub(1).is_some_and(|i| menu.enabled.get(i) == Some(&true)));
+        if !ok {
+            eprintln!("move {m} unavailable");
+            std::process::exit(1);
+        }
+        flow.step(&[Input::Digit(m)]);
+    }
+    let mut script: std::collections::VecDeque<char> = args.keys.chars().collect();
     let mut scene = Scene::new();
-    scene.set_fighters(args.duel);
+    let mut staged = flow.preview().0;
+    scene.set_fighters(staged);
     for b in &mut scene.bodies {
         b.metal = args.metal % METALS.len();
     }
-    // The fighter whose turn it is; M/N change their metal.
-    let active = 0usize;
+    let mut bars: Option<[[f32; 3]; 2]> = None;
     let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
     let mut opts = Opts { edges: !args.noedges, fine: true };
@@ -140,6 +242,21 @@ async fn main() {
         frame += 1;
 
         // ---- input -------------------------------------------------------------
+        let inputs = if args.shot.is_some() { script.pop_front().map(scripted).unwrap_or_default() } else { read_inputs() };
+        flow.step(&inputs);
+        if flow.quit {
+            break;
+        }
+        let (classes, dims) = flow.preview();
+        if classes != staged {
+            scene.set_fighters(classes);
+            staged = classes;
+        }
+        for (b, d) in scene.bodies.iter_mut().zip(dims) {
+            b.dim = d;
+        }
+        let active = flow.active();
+        let hotkeys = !flow.typing() && args.shot.is_none();
         let m: Vec2 = mouse_position().into();
         if is_mouse_button_down(MouseButton::Right) {
             let d = m - last_mouse;
@@ -151,34 +268,43 @@ async fn main() {
         if wheel != 0.0 {
             cam_dist = (cam_dist * if wheel > 0.0 { 0.9 } else { 1.1 }).clamp(3.0, 16.0);
         }
-        if is_key_pressed(KeyCode::M) {
+        if hotkeys && is_key_pressed(KeyCode::M) {
             let b = &mut scene.bodies[active];
             b.metal = (b.metal + 1) % METALS.len();
         }
-        if is_key_pressed(KeyCode::N) {
+        if hotkeys && is_key_pressed(KeyCode::N) {
             let b = &mut scene.bodies[active];
             b.metal = (b.metal + METALS.len() - 1) % METALS.len();
         }
-        if is_key_pressed(KeyCode::E) {
+        if hotkeys && is_key_pressed(KeyCode::E) {
             opts.edges = !opts.edges;
         }
-        if is_key_pressed(KeyCode::F) {
+        if hotkeys && is_key_pressed(KeyCode::F) {
             opts.fine = !opts.fine;
         }
-        if is_key_pressed(KeyCode::G) {
+        if hotkeys && is_key_pressed(KeyCode::G) {
             size_i = (size_i + 1) % SIZES.len();
         }
-        if is_key_pressed(KeyCode::L) {
+        if hotkeys && is_key_pressed(KeyCode::L) {
             scene.chain_legs = !scene.chain_legs;
         }
-        if is_key_pressed(KeyCode::Escape) {
-            break;
-        }
+        // Panel bars ease toward the numbers on screen (snap in screenshots).
+        bars = flow.shown.as_ref().map(|shown| {
+            let target = [bar_targets(&shown[0]), bar_targets(&shown[1])];
+            let k = if args.shot.is_some() { 1.0 } else { (dt * 6.0).min(1.0) };
+            let mut b = bars.unwrap_or(target);
+            for i in 0..2 {
+                for j in 0..3 {
+                    b[i][j] += (target[i][j] - b[i][j]) * k;
+                }
+            }
+            b
+        });
         scene.update(dt);
         update_embers(&mut embers, &scene, dt);
 
         // ---- camera and grid ---------------------------------------------------
-        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 0.95, 0.0);
+        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.45, 0.0);
         let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
         let (sw, sh) = (screen_width(), screen_height());
         let cam = Cam::look_at(eye, target, 50.0, sw, sh);
@@ -221,7 +347,7 @@ async fn main() {
         // ---- draw --------------------------------------------------------------
         // Screenshot mode draws into an off-screen texture (reading back the window's
         // framebuffer is unreliable on Wayland).
-        let capture = args.shot.is_some() && frame == 6;
+        let capture = args.shot.is_some() && frame == 6 + args.keys.chars().count() as u32;
         let shot_rt = capture.then(|| {
             let rt = render_target(sw as u32, sh as u32);
             set_camera(&Camera2D { render_target: Some(rt.clone()), ..Camera2D::from_display_rect(Rect::new(0.0, 0.0, sw, sh)) });
@@ -277,17 +403,24 @@ async fn main() {
             draw_glyph(&font, g, sp.x - size as f32 * 0.3, sp.y + size as f32 * 0.35, size, col);
         }
 
-        // Name tag over each fighter, in their accent colour.
+        // Name tag over each fighter, in their accent colour; a marker over the active one.
+        let names = flow.names();
         for (i, b) in scene.bodies.iter().enumerate() {
-            let name = ["Player 1", "Player 2"][i];
+            let name = &names[i];
             if let Some((sp, _)) = cam.project(b.to_world(vec3(0.0, 2.5, 0.0))) {
                 let w = measure_text(name, Some(&font), 14, 1.0).width;
-                let c = Color::new(b.accent.x, b.accent.y, b.accent.z, 1.0);
+                let c = Color::new(b.accent.x, b.accent.y, b.accent.z, 1.0 - b.dim * 0.6);
                 draw_text_ex(name, sp.x - w * 0.5, sp.y, TextParams { font: Some(&font), font_size: 14, color: c, ..Default::default() });
+                if flow.duel.is_some() && i == active && flow.banner().is_none() {
+                    let m = "▼";
+                    let mw = measure_text(m, Some(&font), 14, 1.0).width;
+                    draw_text_ex(m, sp.x - mw * 0.5, sp.y + 16.0, TextParams { font: Some(&font), font_size: 14, color: c, ..Default::default() });
+                }
             }
         }
 
-        draw_ui(&font, &scene, &opts, fs, cols, rows, deferred.len(), render_ms);
+        draw_ui(&font, &opts, fs, cols, rows, deferred.len(), render_ms);
+        draw_duel_ui(&font, &flow, &scene, bars, frame);
 
         if let (Some(rt), Some(path)) = (shot_rt, &args.shot) {
             set_default_camera();
@@ -299,12 +432,9 @@ async fn main() {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_ui(font: &Font, scene: &Scene, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred: usize, render_ms: f32) {
+fn draw_ui(font: &Font, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred: usize, render_ms: f32) {
     let (sw, sh) = (screen_width(), screen_height());
     let tp = |color| TextParams { font: Some(font), font_size: 13, color, ..Default::default() };
-    let dim = Color::new(0.6, 0.62, 0.7, 1.0);
-
     draw_rectangle(0.0, 0.0, sw, 22.0, Color::new(0.0, 0.0, 0.0, 0.75));
     let info = format!(
         "Clash of Valor 3D  {} fps  raymarch {:.1} ms  grid {}x{} @{}px  fine cells {}  edges {}  fine {}",
@@ -317,24 +447,53 @@ fn draw_ui(font: &Font, scene: &Scene, opts: &Opts, fs: u16, cols: usize, rows: 
         if opts.edges { "on" } else { "off" },
         if opts.fine { "on" } else { "off" },
     );
-    draw_text_ex(&info, 8.0, 15.0, tp(dim));
+    draw_text_ex(&info, 8.0, 15.0, tp(ui::DIM));
+    let help = "arrows/digits choose  Enter confirm  M/N armour  RMB orbit  wheel zoom  E edges  F fine  G glyphs  Esc quit";
+    draw_rectangle(0.0, sh - 18.0, sw, 18.0, Color::new(0.0, 0.0, 0.0, 0.75));
+    ui::text_centered(font, help, sw * 0.5, sh - 5.0, 12, Color::new(0.5, 0.52, 0.6, 1.0));
+}
 
-    let bar_y = sh - 46.0;
-    draw_rectangle(0.0, bar_y, sw, 46.0, Color::new(0.0, 0.0, 0.0, 0.8));
-    draw_text_ex("Metal of the armour", 8.0, bar_y + 14.0, tp(dim));
-    let mut x = 8.0;
-    for (i, m) in METALS.iter().enumerate() {
-        let g: String = m.glyphs.iter().collect();
-        let label = format!("{g} {}", m.name);
-        let w = measure_text(&label, Some(font), 13, 1.0).width + 12.0;
-        let c = Color::new(m.rgb.x, m.rgb.y, m.rgb.z, 1.0);
-        if i == scene.bodies[0].metal {
-            draw_rectangle_lines(x - 2.0, bar_y + 19.0, w, 20.0, 1.0, c);
-        }
-        draw_text_ex(&label, x + 4.0, bar_y + 33.0, tp(if i == scene.bodies[0].metal { c } else { dim }));
-        x += w + 6.0;
+/// Setup prompts, status panels, the move menu, the caption and the result banner.
+fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3]; 2]>, frame: u32) {
+    let (sw, sh) = (screen_width(), screen_height());
+    let cx = sw * 0.5;
+    let menu_bottom = sh - 22.0;
+    if let (Some(shown), Some(bars)) = (&flow.shown, bars) {
+        let active = flow.active();
+        let views = [0, 1].map(|i| ui::PanelView {
+            fighter: &shown[i],
+            bars: bars[i],
+            accent: scene.bodies[i].accent,
+            active: i == active && flow.banner().is_none(),
+            metal: (shown[i].class == Class::Warrior).then(|| METALS[scene.bodies[i].metal].name),
+        });
+        ui::draw_panels(font, views);
     }
-    let help = "RMB drag turn  wheel zoom  M/N metal  L legs  E edges  F fine grid  G glyph size  Esc quit";
-    let w = measure_text(help, Some(font), 13, 1.0).width;
-    draw_text_ex(help, sw - w - 8.0, bar_y + 14.0, tp(dim));
+    match &flow.screen {
+        Screen::Setup { who, naming, field, menu, .. } => {
+            let accent = ACCENTS[*who];
+            let y = sh * 0.6;
+            if *naming {
+                let title = format!("Player {}, enter your name", who + 1);
+                ui::draw_name_prompt(font, &title, field, accent, y, (frame / 30) % 2 == 0);
+            } else {
+                let title = format!("{}, choose your class", flow.names()[*who]);
+                ui::text_centered(font, &title, cx, y, ui::FONT, ui::rgb(accent));
+                ui::draw_menu(font, menu, cx, y + 14.0);
+            }
+        }
+        Screen::Choose { menu } => {
+            let top = menu_bottom - ui::menu_height(menu);
+            ui::draw_caption(font, &flow.caption, top - 10.0);
+            ui::draw_menu(font, menu, cx, top);
+        }
+        Screen::Result { menu } => {
+            let top = menu_bottom - ui::menu_height(menu);
+            ui::draw_caption(font, &flow.caption, top - 10.0);
+            ui::draw_menu(font, menu, cx, top);
+            if let Some((text, who)) = flow.banner() {
+                ui::draw_banner(font, &text, scene.bodies[who].accent);
+            }
+        }
+    }
 }
