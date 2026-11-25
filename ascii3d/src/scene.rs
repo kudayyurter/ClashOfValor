@@ -304,6 +304,7 @@ impl Scene {
                     metal: keep.get(i).copied().unwrap_or(0),
                     accent: ACCENTS[i],
                     dim: 0.0,
+                    flash: 0.0,
                     parts: Vec::new(),
                     anchors: Anchors::default(),
                 }
@@ -318,6 +319,19 @@ impl Scene {
             b.parts = parts;
             b.anchors = anchors;
         }
+    }
+
+    /// Darkening for a ground point near a fighter's feet: about 0.35 underfoot,
+    /// 1.0 beyond 0.9 m. Invisible fighters cast none.
+    pub fn contact_shadow(&self, p: Vec3) -> f32 {
+        let mut m = 1.0f32;
+        for b in self.bodies.iter().filter(|b| b.dim < 0.99) {
+            let feet = b.to_world(Vec3::ZERO);
+            let d = ((p.x - feet.x).powi(2) + (p.z - feet.z).powi(2)).sqrt();
+            let f = ((d - 0.25) / 0.65).clamp(0.0, 1.0);
+            m = m.min(0.35 + 0.65 * f * f * (3.0 - 2.0 * f));
+        }
+        m
     }
 
     /// Which fighter owns a part id.
@@ -482,6 +496,9 @@ impl Scene {
             let spec = r.dot(self.sun).max(0.0).powf(24.0) * 0.7 * (0.3 + 0.7 * diff);
             rgb += Vec3::splat(spec);
         }
+        if hit.mat == Mat::Grass {
+            rgb *= self.contact_shadow(p);
+        }
         rgb *= 1.0 - (hit.t / MAX_DIST).powf(0.7);
         let lum = rgb.dot(vec3(0.3, 0.59, 0.11)).clamp(0.0, 1.0);
         Shade { rgb, lum, p }
@@ -508,6 +525,8 @@ pub struct Body {
     pub accent: Vec3,
     /// 0 drawn normally .. 1 invisible.
     pub dim: f32,
+    /// Hit flash: 1 at impact, fading to 0; glyphs lerp toward white.
+    pub flash: f32,
     pub parts: Vec<Part>,
     pub anchors: Anchors,
 }
@@ -611,5 +630,18 @@ mod tests {
         s.bodies[1].dim = 1.0;
         let (_, id, _) = s.sdf(chest(&s, 1));
         assert_ne!(Scene::owner(id), Some(1));
+    }
+
+    #[test]
+    fn shadow_under_feet() {
+        let mut s = two(Class::Warrior, Class::Sorcerer);
+        let feet = s.bodies[0].to_world(Vec3::ZERO);
+        assert!(s.contact_shadow(feet) < 0.5);
+        assert_eq!(s.contact_shadow(feet + vec3(2.0, 0.0, 0.0)), 1.0);
+        s.bodies[0].pose.root = vec3(0.0, 0.0, 1.0);
+        let moved = s.bodies[0].to_world(Vec3::ZERO);
+        assert!(s.contact_shadow(moved) < 0.5, "shadow follows a lunge");
+        s.bodies[0].dim = 1.0;
+        assert_eq!(s.contact_shadow(moved), 1.0);
     }
 }

@@ -161,6 +161,18 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
         return CellOut::Empty(hit.t);
     }
     let body = Scene::owner(best_id).and_then(|i| scene.bodies.get(i));
+    let mut rgb = rgb;
+    if let Some(b) = body {
+        if is_edge && hit.mat.is_hero() {
+            // Fighter outlines: brighter, tinted with the player's colour.
+            rgb = rgb.lerp(b.accent, 0.35);
+            let lum = rgb.dot(vec3(0.3, 0.59, 0.11));
+            if lum < 0.45 {
+                rgb *= (0.45 / lum.max(0.05)).min(4.0);
+            }
+        }
+        rgb = flash_rgb(rgb, b.flash);
+    }
     let glow = match hit.mat {
         Mat::Fire | Mat::Orb => 1.0,
         Mat::Crystal => 0.3,
@@ -169,6 +181,11 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     };
     let fade = 1.0 - body.map_or(0.0, |b| b.dim);
     CellOut::Glyph(Cell { glyph, color: to_color(rgb * fade), depth: hit.t, glow: glow * fade })
+}
+
+/// Hit flash: lerp a glyph colour toward white.
+pub fn flash_rgb(rgb: Vec3, flash: f32) -> Vec3 {
+    rgb.lerp(Vec3::splat(1.2), flash.clamp(0.0, 1.0))
 }
 
 /// Does this hit belong on the fine grid: a hero material of a masked fighter.
@@ -496,5 +513,13 @@ mod tests {
             last = k;
         }
         assert!(grass_light(0.0) > grass_light(12.0) + 0.3);
+    }
+
+    #[test]
+    fn flash_goes_white() {
+        let v = vec3(0.2, 0.3, 0.4);
+        assert_eq!(flash_rgb(v, 0.0), v);
+        let w = flash_rgb(v, 1.0);
+        assert!(w.min_element() >= 1.0);
     }
 }

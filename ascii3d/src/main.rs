@@ -114,6 +114,17 @@ impl World {
         // Effects first, so an impact fired by a skip this frame is still seen while the
         // move is on screen.
         let impact = flow.take_impact();
+        // The last move's targets flash white for 0.12 s after its impact. Driven by
+        // the flow's impact clock, so a frozen screenshot shows it too.
+        let flash = (1.0 - flow.since_impact / 0.12).max(0.0);
+        for b in &mut self.scene.bodies {
+            b.flash = 0.0;
+        }
+        for e in flow.last.iter().flat_map(|r| &r.events) {
+            if let rules::Event::Hit { target, .. } = *e {
+                self.scene.bodies[target].flash = flash;
+            }
+        }
         if let Screen::Animate { action, .. } = &flow.screen {
             self.fx.on_action(action, &self.scene.bodies, dt, impact);
         } else {
