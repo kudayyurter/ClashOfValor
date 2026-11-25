@@ -26,12 +26,27 @@ pub enum Mat {
     Chain,
     Blade,
     Cloth,
+    /// Sorcerer's robe and hat.
+    Robe,
+    /// Assassin's leathers.
+    Leather,
+    /// Hoods and cloaks in the player's accent colour.
+    Cloak,
+    /// The glowing stone on the Sorcerer's staff.
+    Crystal,
+    /// The fire orb in flight.
+    Orb,
 }
 
 impl Mat {
     /// Hero materials are drawn on the fine (half-size) glyph grid.
     pub fn is_hero(self) -> bool {
-        matches!(self, Mat::Plate | Mat::Chain | Mat::Blade | Mat::Cloth)
+        matches!(self, Mat::Plate | Mat::Chain | Mat::Blade | Mat::Cloth | Mat::Robe | Mat::Leather | Mat::Cloak | Mat::Crystal)
+    }
+
+    /// Light sources: drawn at their own colour, no outlines, with a halo.
+    pub fn is_emissive(self) -> bool {
+        matches!(self, Mat::Fire | Mat::Crystal | Mat::Orb)
     }
 }
 
@@ -271,7 +286,7 @@ impl Scene {
             fire,
             flicker: 1.0,
             chain_legs: true,
-            sun: vec3(0.5, 0.8, 0.3).normalize(),
+            sun: vec3(-0.35, 0.75, 0.6).normalize(),
         }
     }
 
@@ -425,13 +440,25 @@ impl Scene {
             Mat::Plate | Mat::Blade => metal,
             Mat::Chain => metal * 0.9,
             Mat::Cloth => accent * 0.8,
-            Mat::Fire | Mat::Sky => Vec3::ONE,
+            Mat::Robe => vec3(0.42, 0.2, 0.66),
+            Mat::Leather => vec3(0.36, 0.32, 0.3),
+            Mat::Cloak => accent * 0.7,
+            Mat::Fire | Mat::Sky | Mat::Crystal | Mat::Orb => Vec3::ONE,
         }
     }
 
     /// Light one hit point: moonlight with soft shadows, a flickering campfire, metal glints, fog.
     pub fn shade(&self, ro: Vec3, rd: Vec3, hit: &Hit) -> Shade {
         let p = ro + rd * hit.t;
+        if hit.mat == Mat::Crystal {
+            let pulse = 0.85 + 0.15 * (self.time * 4.0).sin();
+            return Shade { rgb: vec3(0.55, 0.85, 1.0) * pulse, lum: 0.9 * pulse, p };
+        }
+        if hit.mat == Mat::Orb {
+            let h = hash2((p.x * 30.0 + self.time * 20.0) as i32, (p.y * 30.0) as i32);
+            let rgb = vec3(1.0, 0.85, 0.4).lerp(vec3(1.0, 0.3, 0.05), h);
+            return Shade { rgb, lum: 1.0 - 0.4 * h, p };
+        }
         if hit.mat == Mat::Fire {
             let h = ((p.y - self.fire.y) / 0.8).clamp(0.0, 1.0);
             let rgb = vec3(1.0, 0.9, 0.45).lerp(vec3(1.0, 0.25, 0.05), h) * self.flicker;
@@ -446,6 +473,10 @@ impl Scene {
         let sky = 0.5 + 0.5 * n.y;
         let mut rgb = base * (vec3(0.1, 0.12, 0.22) * sky + vec3(0.7, 0.72, 0.85) * diff)
             + vec3(1.0, 0.55, 0.2) * fire * (0.4 + 0.6 * base);
+        if hit.mat.is_hero() {
+            // Character fill light from the viewer, so fighters read against the night.
+            rgb += base * vec3(0.55, 0.55, 0.65) * n.dot(-rd).max(0.0);
+        }
         if matches!(hit.mat, Mat::Plate | Mat::Blade | Mat::Chain) {
             let r = rd - n * 2.0 * rd.dot(n);
             let spec = r.dot(self.sun).max(0.0).powf(24.0) * 0.7 * (0.3 + 0.7 * diff);

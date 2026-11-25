@@ -48,8 +48,9 @@ pub const BOUND_RADIUS: f32 = 1.7;
 /// Part ids are `id_base + k`, `k < 40`.
 pub fn build(class: Class, pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) {
     match class {
-        // Assassin and Sorcerer get their own models in a later step.
-        Class::Warrior | Class::Assassin | Class::Sorcerer => warrior(pose, id_base, chain_legs),
+        Class::Warrior => warrior(pose, id_base, chain_legs),
+        Class::Assassin => assassin(pose, id_base),
+        Class::Sorcerer => sorcerer(pose, id_base),
     }
 }
 
@@ -92,8 +93,77 @@ fn warrior(pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) 
     k.add(Mat::Cloth, Shape::RBox { c: vec3(0.0, 1.1, -0.17) + up, half: vec3(0.22, 0.4, 0.02), round: 0.01 });
     k.add(Mat::Blade, Shape::Capsule { a: hand_r + vec3(0.0, 0.0, 0.1), b: tip, r: 0.028 });
     k.add(Mat::Plate, Shape::RBox { c: hand_r + vec3(0.0, 0.0, 0.08), half: vec3(0.11, 0.02, 0.02), round: 0.01 });
+    // Front of the surcoat and a helmet plume, both in the player's accent.
+    k.add(Mat::Cloth, Shape::RBox { c: vec3(0.0, 0.95, 0.13) + up, half: vec3(0.16, 0.2, 0.015), round: 0.01 });
+    k.add(Mat::Cloak, Shape::Capsule { a: vec3(0.0, 1.8, 0.02) + up, b: vec3(0.0, 1.88, -0.2) + up, r: 0.045 });
+    // Kite shield strapped to the left forearm.
+    k.add(Mat::Plate, Shape::RBox { c: hand_l + vec3(0.07, 0.1, 0.04), half: vec3(0.03, 0.24, 0.17), round: 0.03 });
     let chest = vec3(0.0, 1.2, 0.12) + up;
     let anchors = Anchors { weapon_tip: tip, hand_r, chest, head: vec3(0.0, 1.66, 0.0) + up, focus: chest };
+    (k.parts, anchors)
+}
+
+/// Robed spellcaster: a robe flared to the ground, a tall pointed hat, long sleeves and
+/// a staff taller than the body with a glowing crystal on top.
+fn sorcerer(pose: &Pose, id_base: u16) -> (Vec<Part>, Anchors) {
+    let up = vec3(0.0, pose.breath * 0.02, 0.0);
+    let lean = vec3(0.0, 0.0, pose.lean * 0.12);
+    let hand_r = vec3(-0.3, 1.02 + pose.weapon * 0.28, 0.16 + pose.arm_r * 0.3) + up;
+    let hand_l = vec3(0.27, 1.0 + pose.guard * 0.3, 0.1 + pose.arm_l * 0.35) + up;
+    // The staff leans toward the opponent as it is raised.
+    let tilt = pose.weapon * 0.6;
+    let dir = vec3(0.0, tilt.cos(), tilt.sin());
+    let top = hand_r + dir * 1.2;
+    let crystal = top + dir * 0.1;
+    let mut k = Kit::new(id_base);
+    k.add(Mat::Robe, Shape::Cone { a: vec3(0.0, 0.1, 0.0), b: vec3(0.0, 1.3, 0.0) + up + lean, ra: 0.36, rb: 0.16 });
+    k.add(Mat::Cloak, Shape::Cone { a: vec3(0.0, 0.0, 0.0), b: vec3(0.0, 0.13, 0.0), ra: 0.39, rb: 0.36 });
+    k.add(Mat::Robe, Shape::Ellipsoid { c: vec3(0.0, 1.34, 0.0) + up + lean, rad: vec3(0.21, 0.17, 0.14) });
+    k.add(Mat::Robe, Shape::Capsule { a: vec3(-0.21, 1.4, 0.0) + up + lean, b: hand_r, r: 0.08 });
+    k.add(Mat::Robe, Shape::Capsule { a: vec3(0.21, 1.4, 0.0) + up + lean, b: hand_l, r: 0.08 });
+    k.add(Mat::Robe, Shape::Sphere { c: vec3(0.0, 1.6, 0.0) + up + lean, r: 0.135 });
+    // Hat: a wide brim and a cone that bends back to a point.
+    k.add(Mat::Robe, Shape::Cone { a: vec3(0.0, 1.66, 0.0) + up + lean, b: vec3(0.0, 1.7, 0.0) + up + lean, ra: 0.32, rb: 0.22 });
+    k.add(Mat::Robe, Shape::Cone { a: vec3(0.0, 1.69, 0.0) + up + lean, b: vec3(0.0, 2.25, -0.1) + up + lean, ra: 0.19, rb: 0.01 });
+    k.add(Mat::Wood, Shape::Capsule { a: hand_r - dir * 0.95, b: top, r: 0.03 });
+    k.add(Mat::Crystal, Shape::Sphere { c: crystal, r: 0.075 });
+    let chest = vec3(0.0, 1.3, 0.14) + up + lean;
+    let anchors = Anchors { weapon_tip: crystal, hand_r, chest, head: vec3(0.0, 1.62, 0.0) + up + lean, focus: crystal };
+    (k.parts, anchors)
+}
+
+/// Hooded skirmisher: slimmer and shorter than the knight, crouched, in dark leathers
+/// with a short accent-coloured cloak and two daggers held low.
+fn assassin(pose: &Pose, id_base: u16) -> (Vec<Part>, Anchors) {
+    let crouch = 0.35 + pose.crouch;
+    let drop = vec3(0.0, -crouch * 0.12 + pose.breath * 0.02, 0.0);
+    let lean = vec3(0.0, 0.0, 0.06 + pose.lean * 0.12);
+    let body = drop + lean;
+    let hand_r = vec3(-0.25, 0.86 + pose.weapon * 0.25, 0.2 + pose.arm_r * 0.35) + drop;
+    let hand_l = vec3(0.25, 0.86 + pose.guard * 0.25, 0.16 + pose.arm_l * 0.35) + drop;
+    let blade = |h: Vec3| (h + vec3(0.0, 0.0, 0.05), h + vec3(0.0, 0.06, 0.36));
+    let mut k = Kit::new(id_base);
+    for x in [0.1f32, -0.1] {
+        let hip = vec3(x, 0.8, 0.0) + drop;
+        let knee = vec3(x * 1.1, 0.44 - crouch * 0.05, 0.08 + crouch * 0.08);
+        let foot = vec3(x * 1.2, 0.07, x.signum() * 0.07);
+        k.add(Mat::Leather, Shape::Capsule { a: hip, b: knee, r: 0.07 });
+        k.add(Mat::Leather, Shape::Capsule { a: knee, b: foot, r: 0.062 });
+    }
+    k.add(Mat::Leather, Shape::RBox { c: vec3(0.0, 1.06, 0.0) + body, half: vec3(0.16, 0.22, 0.1), round: 0.06 });
+    k.add(Mat::Cloak, Shape::Cone { a: vec3(0.0, 1.16, -0.01) + body, b: vec3(0.0, 1.36, 0.0) + body, ra: 0.26, rb: 0.13 });
+    k.add(Mat::Cloak, Shape::RBox { c: vec3(0.0, 0.98, -0.13) + body, half: vec3(0.2, 0.3, 0.02), round: 0.015 });
+    k.add(Mat::Leather, Shape::Capsule { a: vec3(-0.19, 1.26, 0.0) + body, b: hand_r, r: 0.055 });
+    k.add(Mat::Leather, Shape::Capsule { a: vec3(0.19, 1.26, 0.0) + body, b: hand_l, r: 0.055 });
+    // Hood with a peak that falls back behind the head.
+    k.add(Mat::Cloak, Shape::Sphere { c: vec3(0.0, 1.46, 0.0) + body, r: 0.135 });
+    k.add(Mat::Cloak, Shape::Cone { a: vec3(0.0, 1.5, -0.04) + body, b: vec3(0.0, 1.64, -0.18) + body, ra: 0.1, rb: 0.01 });
+    let (a, tip) = blade(hand_r);
+    k.add(Mat::Blade, Shape::Capsule { a, b: tip, r: 0.02 });
+    let (a2, b2) = blade(hand_l);
+    k.add(Mat::Blade, Shape::Capsule { a: a2, b: b2, r: 0.02 });
+    let chest = vec3(0.0, 1.1, 0.11) + body;
+    let anchors = Anchors { weapon_tip: tip, hand_r, chest, head: vec3(0.0, 1.46, 0.0) + body, focus: chest };
     (k.parts, anchors)
 }
 
@@ -148,5 +218,58 @@ pub mod tests {
         assert!(parts.iter().all(|p| p.mat.is_hero()));
         assert!(parts.iter().any(|p| p.mat == Mat::Blade));
         assert!(a.weapon_tip.z > 0.5, "sword points forward");
+    }
+
+    /// Highest point of the model, found by scanning down a grid of vertical rays.
+    fn top(parts: &[Part]) -> f32 {
+        let mut y = 3.0;
+        while y > 0.0 {
+            for xi in -15..=15 {
+                for zi in -15..=15 {
+                    let p = vec3(xi as f32 * 0.04, y, zi as f32 * 0.04);
+                    if parts.iter().any(|q| q.shape.dist(p) <= 0.0) {
+                        return y;
+                    }
+                }
+            }
+            y -= 0.01;
+        }
+        0.0
+    }
+
+    #[test]
+    fn sorcerer_is_tall_pointed_with_crystal_staff() {
+        let (w, _) = build(Class::Warrior, &Pose::default(), 10, true);
+        let (s, a) = build(Class::Sorcerer, &Pose::default(), 10, true);
+        assert!(top(&s) > top(&w) + 0.3, "hat/staff tower over the knight: {} vs {}", top(&s), top(&w));
+        let crystal = s.iter().find(|p| p.mat == Mat::Crystal).expect("crystal");
+        let (c, _) = extent(&crystal.shape);
+        assert!((a.focus - c).length() < 0.15, "focus sits on the crystal");
+        assert!(s.iter().any(|p| p.mat == Mat::Robe));
+        assert!(s.iter().any(|p| p.mat == Mat::Wood), "staff");
+    }
+
+    #[test]
+    fn assassin_shorter_with_two_daggers() {
+        let (w, _) = build(Class::Warrior, &Pose::default(), 10, true);
+        let (s, a) = build(Class::Assassin, &Pose::default(), 10, true);
+        assert!(top(&s) < top(&w) * 0.95, "assassin {} vs warrior {}", top(&s), top(&w));
+        assert_eq!(s.iter().filter(|p| p.mat == Mat::Blade).count(), 2);
+        assert!(s.iter().any(|p| p.mat == Mat::Leather) && s.iter().any(|p| p.mat == Mat::Cloak));
+        assert!(a.weapon_tip.y < 1.1, "daggers held low");
+    }
+
+    #[test]
+    fn warrior_has_shield_on_left_arm() {
+        let (w, _) = build(Class::Warrior, &Pose::default(), 10, true);
+        assert!(w.iter().any(|p| matches!(p.shape, Shape::RBox { c, half, .. } if p.mat == Mat::Plate && c.x > 0.3 && half.z > 0.12 && half.y > 0.15)));
+    }
+
+    #[test]
+    fn new_materials_draw_on_hero_grid() {
+        for m in [Mat::Robe, Mat::Leather, Mat::Crystal, Mat::Cloak] {
+            assert!(m.is_hero(), "{m:?}");
+        }
+        assert!(!Mat::Orb.is_hero());
     }
 }

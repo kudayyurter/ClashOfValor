@@ -149,7 +149,7 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     let hit = Hit { t: ts[rep], id: best_id, mat: mats[rep] };
     let sh = scene.shade(cam.pos, rd, &hit);
 
-    let is_edge = opts.edges && frac < 0.85 && gx * gx + gy * gy > 0.01 && hit.mat != Mat::Fire;
+    let is_edge = opts.edges && frac < 0.85 && gx * gx + gy * gy > 0.01 && !hit.mat.is_emissive();
     let (glyph, rgb) = if is_edge {
         (edge_glyph(gx, gy, frac), sh.rgb * 1.2)
     } else {
@@ -160,7 +160,8 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     }
     let body = Scene::owner(best_id).and_then(|i| scene.bodies.get(i));
     let glow = match hit.mat {
-        Mat::Fire => 1.0,
+        Mat::Fire | Mat::Orb => 1.0,
+        Mat::Crystal => 0.3,
         Mat::Blade if matches!(METALS[body.map_or(0, |b| b.metal)].name, "Moonsteel" | "Emberstone") => 0.5,
         _ => 0.0,
     };
@@ -220,6 +221,17 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
         }
         Mat::Chain => chain_glyph(scene, hit, sh),
         Mat::Cloth => cloth_glyph(scene, hit, sh),
+        Mat::Robe => robe_glyph(scene, hit, sh),
+        Mat::Leather => leather_glyph(scene, hit, sh),
+        Mat::Cloak => (ramp(&['.', ':', ';', '%', '#'], sh.lum * 2.4), sh.rgb),
+        Mat::Crystal => {
+            let h = hash2((sh.p.y * 40.0 + scene.time * 6.0) as i32, (sh.p.x * 40.0 + sh.p.z * 33.0) as i32);
+            (ramp(&['+', '*', 'o', '*'], h), sh.rgb * 1.2)
+        }
+        Mat::Orb => {
+            let h = hash2((sh.p.y * 25.0 + scene.time * 14.0) as i32, (sh.p.x * 25.0 + sh.p.z * 19.0) as i32);
+            (ramp(&['o', '*', '@', '*'], h), sh.rgb * 1.3)
+        }
         Mat::Sky => (' ', Vec3::ZERO),
     }
 }
@@ -296,6 +308,38 @@ fn cloth_glyph(scene: &Scene, hit: &Hit, sh: &Shade) -> (char, Vec3) {
         return ('$', vec3(1.0, 0.78, 0.3) * (0.3 + sh.lum * 2.0).min(1.2));
     }
     (ramp(&['.', '-', '=', '%'], sh.lum * 2.5), sh.rgb)
+}
+
+/// Robe: deep purple with rows of stars and runes, and a hem in the player's accent.
+fn robe_glyph(scene: &Scene, hit: &Hit, sh: &Shade) -> (char, Vec3) {
+    let (u, v) = hero_uv(scene, hit, sh);
+    let accent = scene.body_part(hit.id).map_or(Vec3::ONE, |(b, _)| b.accent);
+    let local_y = scene.body_part(hit.id).map_or(1.0, |(b, _)| b.to_local(sh.p).y);
+    if local_y < 0.16 {
+        return (ramp(&['-', '=', '#'], sh.lum * 2.2), accent * (0.35 + sh.lum * 1.6).min(1.2));
+    }
+    let row = (v * 9.0).floor() as i32;
+    let col = (u * 2.5).floor() as i32;
+    if row.rem_euclid(3) == 0 && (row + col).rem_euclid(3) == 0 {
+        let rune = ['*', '+', 'x', '%'][(row + col).rem_euclid(4) as usize];
+        return (rune, vec3(0.95, 0.85, 1.0) * (0.3 + sh.lum * 2.0).min(1.1));
+    }
+    (ramp(&['.', ':', '~', '='], sh.lum * 2.5), sh.rgb)
+}
+
+/// Leather: wrapped bands that cross the limbs and torso.
+fn leather_glyph(scene: &Scene, hit: &Hit, sh: &Shade) -> (char, Vec3) {
+    let (u, v) = hero_uv(scene, hit, sh);
+    let band = ((v * 18.0) + (u / TAU * 6.0)).floor() as i32;
+    let l = sh.lum;
+    let g = if l < 0.05 {
+        ':'
+    } else if band.rem_euclid(3) == 0 {
+        if l > 0.3 { 'X' } else { 'x' }
+    } else {
+        ramp(&['.', ';', '=', 'H'], l * 2.4)
+    };
+    (g, sh.rgb)
 }
 
 /// Thin glyphs on a dark background look dimmer than the colour they are drawn in, so

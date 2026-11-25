@@ -39,16 +39,33 @@ struct Args {
     yaw: f32,
     dist: f32,
     metal: usize,
+    duel: [Class; 2],
+    noedges: bool,
+}
+
+fn parse_class(s: &str) -> Option<Class> {
+    Class::ALL.into_iter().find(|c| c.name().eq_ignore_ascii_case(s.trim()))
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { shot: None, yaw: 0.0, dist: 7.0, metal: 0 };
+    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: [Class::Warrior, Class::Sorcerer], noedges: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
             "--shot" => a.shot = it.next(),
             "--yaw" => a.yaw = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.yaw),
             "--dist" => a.dist = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.dist),
+            "--duel" => {
+                let v = it.next().unwrap_or_default();
+                let c: Vec<Class> = v.split(',').filter_map(parse_class).collect();
+                if c.len() == 2 {
+                    a.duel = [c[0], c[1]];
+                } else {
+                    eprintln!("--duel wants two of warrior,assassin,sorcerer (got {v:?})");
+                    std::process::exit(2);
+                }
+            }
+            "--noedges" => a.noedges = true,
             "--metal" => a.metal = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             _ => {}
         }
@@ -97,7 +114,7 @@ async fn main() {
     let args = parse_args();
     let font = load_ttf_font_from_bytes(include_bytes!("../assets/mono.ttf")).expect("font");
     let mut scene = Scene::new();
-    scene.set_fighters([Class::Warrior, Class::Warrior]);
+    scene.set_fighters(args.duel);
     for b in &mut scene.bodies {
         b.metal = args.metal % METALS.len();
     }
@@ -105,7 +122,7 @@ async fn main() {
     let active = 0usize;
     let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
-    let mut opts = Opts { edges: true, fine: true };
+    let mut opts = Opts { edges: !args.noedges, fine: true };
     let mut embers: Vec<Ember> = Vec::new();
     let mut last_mouse: Vec2 = mouse_position().into();
     let mut frame = 0u32;
@@ -161,7 +178,7 @@ async fn main() {
         update_embers(&mut embers, &scene, dt);
 
         // ---- camera and grid ---------------------------------------------------
-        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.0, 0.0);
+        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 0.95, 0.0);
         let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
         let (sw, sh) = (screen_width(), screen_height());
         let cam = Cam::look_at(eye, target, 50.0, sw, sh);
@@ -263,7 +280,7 @@ async fn main() {
         // Name tag over each fighter, in their accent colour.
         for (i, b) in scene.bodies.iter().enumerate() {
             let name = ["Player 1", "Player 2"][i];
-            if let Some((sp, _)) = cam.project(b.to_world(b.anchors.head + vec3(0.0, 0.5, 0.0))) {
+            if let Some((sp, _)) = cam.project(b.to_world(vec3(0.0, 2.5, 0.0))) {
                 let w = measure_text(name, Some(&font), 14, 1.0).width;
                 let c = Color::new(b.accent.x, b.accent.y, b.accent.z, 1.0);
                 draw_text_ex(name, sp.x - w * 0.5, sp.y, TextParams { font: Some(&font), font_size: 14, color: c, ..Default::default() });
