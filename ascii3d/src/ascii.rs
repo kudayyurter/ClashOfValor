@@ -180,7 +180,7 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
                 rgb *= (0.45 / lum.max(0.05)).min(4.0);
             }
         }
-        rgb = flash_rgb(rgb, b.flash);
+        rgb = flash_rgb(rgb, b.flash, is_edge);
     }
     let glow = match hit.mat {
         Mat::Fire | Mat::Orb => 1.0,
@@ -265,9 +265,18 @@ pub fn sky_glyph(dir: Vec3, time: f32) -> Option<(char, Vec3)> {
     Some((g, vec3(0.75, 0.8, 1.0) * tw))
 }
 
-/// Hit flash: lerp a glyph colour toward white.
-pub fn flash_rgb(rgb: Vec3, flash: f32) -> Vec3 {
-    rgb.lerp(Vec3::splat(1.2), flash.clamp(0.0, 1.0))
+/// Hit flash: brighten a glyph without washing it out.
+pub fn flash_rgb(rgb: Vec3, flash: f32, edge: bool) -> Vec3 {
+    let f = flash.clamp(0.0, 1.0);
+    if edge {
+        // Outlines pop hard so the hit reads.
+        rgb * (1.0 + 1.5 * f) + Vec3::splat(0.25 * f)
+    } else {
+        // Fill brightens but keeps its colour and texture: scale, never blow out.
+        let v = rgb * (1.0 + 0.8 * f);
+        let m = v.max_element();
+        if m > 1.0 { v / m } else { v }
+    }
 }
 
 /// Does this hit belong on the fine grid: a hero material of a masked fighter.
@@ -627,11 +636,15 @@ mod tests {
     }
 
     #[test]
-    fn flash_goes_white() {
+    fn flash_brightens_but_keeps_colour() {
         let v = vec3(0.2, 0.3, 0.4);
-        assert_eq!(flash_rgb(v, 0.0), v);
-        let w = flash_rgb(v, 1.0);
-        assert!(w.min_element() >= 1.0);
+        assert_eq!(flash_rgb(v, 0.0, false), v);
+        let fill = flash_rgb(v, 1.0, false);
+        assert!(fill.x > v.x && fill.y > v.y && fill.z > v.z, "brighter: {fill}");
+        assert!(fill.z - fill.x > 0.08, "hue kept, not washed to grey: {fill}");
+        assert!(fill.max_element() <= 1.0, "no blow-out to white: {fill}");
+        let edge = flash_rgb(v, 1.0, true);
+        assert!(edge.max_element() > fill.max_element(), "outlines pop more than the fill");
     }
 
     #[test]
