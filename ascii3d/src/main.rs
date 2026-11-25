@@ -11,6 +11,7 @@
 //! starts without setup; `--moves 1,2` plays menu choices first; `--keys` types
 //! scripted keys (one per frame; `|` Enter, `<` Up, `>` Down, `#` Backspace).
 
+mod anim;
 mod ascii;
 mod flow;
 mod models;
@@ -61,6 +62,7 @@ struct Args {
     duel: Option<[Class; 2]>,
     moves: Vec<u8>,
     keys: String,
+    at: Option<f32>,
     noedges: bool,
 }
 
@@ -69,7 +71,7 @@ fn parse_class(s: &str) -> Option<Class> {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), noedges: false };
+    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), at: None, noedges: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -89,6 +91,7 @@ fn parse_args() -> Args {
             "--noedges" => a.noedges = true,
             "--moves" => a.moves = it.next().unwrap_or_default().split(',').filter_map(|m| m.trim().parse().ok()).collect(),
             "--keys" => a.keys = it.next().unwrap_or_default(),
+            "--at" => a.at = it.next().and_then(|v| v.parse().ok()),
             "--metal" => a.metal = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             _ => {}
         }
@@ -206,13 +209,35 @@ async fn main() {
         Some(classes) => Flow::with_duel(["Player 1", "Player 2"], classes),
         None => Flow::new(),
     };
-    for &m in &args.moves {
+    // Scripted moves play out fully, except that `--at` freezes the last one part-way.
+    for (n, &m) in args.moves.iter().enumerate() {
         let ok = matches!(&flow.screen, Screen::Choose { menu } if (m as usize).checked_sub(1).is_some_and(|i| menu.enabled.get(i) == Some(&true)));
         if !ok {
             eprintln!("move {m} unavailable");
             std::process::exit(1);
         }
         flow.step(&[Input::Digit(m)]);
+        let last = n + 1 == args.moves.len();
+        match (last, args.at, &flow.screen) {
+            (true, Some(at), Screen::Animate { action, .. }) => {
+                let target = at.clamp(0.0, 1.0) * action.dur;
+                let mut t = 0.0;
+                while t + 1e-4 < target {
+                    let step = (target - t).min(1.0 / 60.0);
+                    flow.update(step);
+                    t += step;
+                }
+            }
+            _ => {
+                for _ in 0..400 {
+                    if !matches!(flow.screen, Screen::Animate { .. }) {
+                        break;
+                    }
+                    flow.update(1.0 / 60.0);
+                }
+            }
+        }
+        flow.take_impact();
     }
     let mut script: std::collections::VecDeque<char> = args.keys.chars().collect();
     let mut scene = Scene::new();
@@ -247,12 +272,20 @@ async fn main() {
         if flow.quit {
             break;
         }
-        let (classes, dims) = flow.preview();
+        // Screenshots are frozen at the scripted moment.
+        if args.shot.is_none() {
+            flow.update(dt);
+        }
+        let _impact = flow.take_impact();
+        let (classes, _) = flow.preview();
         if classes != staged {
             scene.set_fighters(classes);
             staged = classes;
         }
-        for (b, d) in scene.bodies.iter_mut().zip(dims) {
+        let gap = (scene.bodies[1].pos - scene.bodies[0].pos).length();
+        let (poses, dims) = flow.body_state(scene.time, gap);
+        for ((b, p), d) in scene.bodies.iter_mut().zip(poses).zip(dims) {
+            b.pose = p;
             b.dim = d;
         }
         let active = flow.active();
@@ -486,6 +519,9 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
             let top = menu_bottom - ui::menu_height(menu);
             ui::draw_caption(font, &flow.caption, top - 10.0);
             ui::draw_menu(font, menu, cx, top);
+        }
+        Screen::Animate { .. } => {
+            ui::draw_caption(font, &flow.caption, menu_bottom - 10.0);
         }
         Screen::Result { menu } => {
             let top = menu_bottom - ui::menu_height(menu);

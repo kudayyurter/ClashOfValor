@@ -5,7 +5,9 @@
 //! rest of that frame's inputs are dropped, so a single Enter can never both accept a
 //! name and confirm the next menu.
 
-use crate::rules::{Class, Duel, End, Fighter, Resolution, availability, moves};
+use crate::rules::{Class, Duel, End, Event, Fighter, Resolution, availability, moves};
+use crate::anim::{self, Action};
+use crate::models::Pose;
 use crate::ui::{Key, Menu, NameField};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,6 +26,8 @@ pub enum Input {
 pub enum Screen {
     Setup { who: usize, naming: bool, field: NameField, menu: Menu, names: [String; 2], classes: [Class; 2] },
     Choose { menu: Menu },
+    /// A move playing out; `collapse` runs 0..1 after a knockout.
+    Animate { action: Action, collapse: f32 },
     Result { menu: Menu },
 }
 
@@ -35,13 +39,26 @@ pub struct Flow {
     pub caption: Vec<String>,
     /// The last move played, for effects.
     pub last: Option<Resolution>,
+    /// Set when a move's impact happens; read (and cleared) once per frame by `take_impact`.
+    impact_pending: bool,
+    /// Seconds since the last impact (drives the target's flinch).
+    pub since_impact: f32,
     pub quit: bool,
 }
 
 impl Flow {
     /// Start at the setup screen.
     pub fn new() -> Flow {
-        Flow { screen: setup_screen(), duel: None, shown: None, caption: Vec::new(), last: None, quit: false }
+        Flow {
+            screen: setup_screen(),
+            duel: None,
+            shown: None,
+            caption: Vec::new(),
+            last: None,
+            impact_pending: false,
+            since_impact: 10.0,
+            quit: false,
+        }
     }
 
     /// Skip setup: straight into a duel.
@@ -78,10 +95,75 @@ impl Flow {
             Screen::Setup { who, naming, .. } => (0, *who, *naming),
             Screen::Choose { .. } => (1, self.active(), false),
             Screen::Result { .. } => (2, 0, false),
+            Screen::Animate { action, .. } => (3, action.done() as usize, false),
         }
     }
 
     /// Apply one frame of input. Stops at the first input that changes the screen.
+    /// True once after each impact (effects fire on it).
+    pub fn take_impact(&mut self) -> bool {
+        std::mem::take(&mut self.impact_pending)
+    }
+
+    fn on_impact(&mut self) {
+        self.shown = self.duel.as_ref().map(|d| d.f.clone());
+        if let Some(res) = &self.last {
+            self.caption = res.narration.clone();
+        }
+        self.impact_pending = true;
+        self.since_impact = 0.0;
+    }
+
+    /// Advance the move animation by `dt` seconds.
+    pub fn update(&mut self, dt: f32) {
+        self.since_impact += dt;
+        let Screen::Animate { action, collapse } = &mut self.screen else { return };
+        if !action.done() {
+            if action.advance(dt) {
+                self.on_impact();
+            }
+            return;
+        }
+        match self.duel.as_ref().and_then(|d| d.end) {
+            Some(End::Won { .. }) if *collapse < 1.0 => *collapse = (*collapse + dt).min(1.0),
+            Some(_) => self.screen = Screen::Result { menu: Menu::plain(&["Rematch", "New duel", "Quit"]) },
+            None => self.screen = Screen::Choose { menu: self.move_menu() },
+        }
+    }
+
+    /// Poses and dim amounts for both fighters right now.
+    pub fn body_state(&self, time: f32, gap: f32) -> ([Pose; 2], [f32; 2]) {
+        let mut poses = [anim::idle_pose(time, 0), anim::idle_pose(time, 1)];
+        let mut dims = self.preview().1;
+        // The last target keeps flinching briefly, even after the menu comes back.
+        if let Some(res) = &self.last {
+            for e in &res.events {
+                if let Event::Hit { target, .. } = e {
+                    poses[*target] = anim::add(poses[*target], anim::flinch_pose(self.since_impact));
+                }
+            }
+        }
+        let end = self.duel.as_ref().and_then(|d| d.end);
+        match &self.screen {
+            Screen::Animate { action, collapse } => {
+                let (a, p) = (action.res.actor, action.phase());
+                let class = self.duel.as_ref().map_or(Class::Warrior, |d| d.f[a].class);
+                poses[a] = anim::add(poses[a], anim::actor_pose(class, action.res.mv, p, gap));
+                dims[a] = anim::actor_dim(action.res.mv, p);
+                if let Some(End::Won { winner }) = end {
+                    poses[1 - winner] = anim::add(poses[1 - winner], anim::collapse_pose(*collapse));
+                }
+            }
+            Screen::Result { .. } => match end {
+                Some(End::Won { winner }) => poses[1 - winner] = anim::collapse_pose(1.0),
+                Some(End::Fled { who }) => dims[who] = 1.0,
+                None => {}
+            },
+            _ => {}
+        }
+        (poses, dims)
+    }
+
     pub fn step(&mut self, inputs: &[Input]) {
         for &i in inputs {
             if i == Input::Esc {
@@ -99,6 +181,19 @@ impl Flow {
     }
 
     fn apply(&mut self, i: Input) {
+        // While a move plays, only Space/Enter (skip) do anything.
+        if let Screen::Animate { action, collapse } = &mut self.screen {
+            if matches!(i, Input::Space | Input::Enter) {
+                if !action.done() {
+                    if action.skip() {
+                        self.on_impact();
+                    }
+                } else {
+                    *collapse = 1.0;
+                }
+            }
+            return;
+        }
         match &mut self.screen {
             Screen::Setup { who, naming, field, menu, names, classes } => {
                 if *naming {
@@ -134,15 +229,12 @@ impl Flow {
                 let duel = self.duel.as_mut().expect("duel");
                 let mv = moves(duel.f[duel.turn].class)[pick];
                 let Some(res) = duel.take_turn(mv) else { return };
-                self.shown = Some(duel.f.clone());
-                self.caption = res.narration.clone();
-                self.last = Some(res);
-                self.screen = if self.duel.as_ref().is_some_and(|d| d.end.is_some()) {
-                    Screen::Result { menu: Menu::plain(&["Rematch", "New duel", "Quit"]) }
-                } else {
-                    Screen::Choose { menu: self.move_menu() }
-                };
+                // `shown` and the result lines wait for the impact.
+                self.caption = res.narration[..1].to_vec();
+                self.last = Some(res.clone());
+                self.screen = Screen::Animate { action: Action::new(res), collapse: 0.0 };
             }
+            Screen::Animate { .. } => {}
             Screen::Result { menu } => {
                 let Some(k) = menu_key(i) else { return };
                 match menu.handle(k) {
@@ -180,9 +272,12 @@ impl Flow {
         }
     }
 
-    /// The active fighter while a duel runs.
+    /// The fighter whose turn it is; while a move plays, the one making it.
     pub fn active(&self) -> usize {
-        self.duel.as_ref().map_or(0, |d| d.turn)
+        match &self.screen {
+            Screen::Animate { action, .. } => action.res.actor,
+            _ => self.duel.as_ref().map_or(0, |d| d.turn),
+        }
     }
 
     /// True while a name is being typed: letter hotkeys must not fire.
@@ -254,6 +349,17 @@ mod tests {
         s.chars().map(Char).collect()
     }
 
+    /// Let any move animation (and knockout collapse) finish.
+    fn settle(f: &mut Flow) {
+        for _ in 0..100 {
+            if !matches!(f.screen, Screen::Animate { .. }) {
+                return;
+            }
+            f.update(0.1);
+        }
+        panic!("animation never finished");
+    }
+
     /// Feed each input as its own frame.
     fn frames(f: &mut Flow, inputs: &[Input]) {
         for i in inputs {
@@ -265,6 +371,7 @@ mod tests {
         match &f.screen {
             Screen::Setup { who, naming, .. } => format!("setup {who} {}", if *naming { "name" } else { "class" }),
             Screen::Choose { .. } => format!("choose {}", f.active()),
+            Screen::Animate { .. } => "animate".into(),
             Screen::Result { .. } => "result".into(),
         }
     }
@@ -357,6 +464,7 @@ mod tests {
     fn choosing_a_move_plays_it_and_passes_the_turn() {
         let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
         frames(&mut f, &[Digit(1)]);
+        settle(&mut f);
         assert_eq!(stage(&f), "choose 1");
         assert_eq!(f.shown.as_ref().unwrap()[1].health, 90);
         assert_eq!(f.caption[0], "A unleashes a devastating slash with their blade, cleaving through with raw power!");
@@ -383,6 +491,7 @@ mod tests {
         let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
         f.duel.as_mut().unwrap().f[1].health = 10;
         frames(&mut f, &[Digit(1)]);
+        settle(&mut f);
         assert_eq!(stage(&f), "result");
         assert_eq!(f.banner(), Some(("A wins!".to_string(), 0)));
         frames(&mut f, &[Digit(1)]);
@@ -394,6 +503,7 @@ mod tests {
     fn flee_then_new_duel() {
         let mut f = Flow::with_duel(["A", "B"], [Class::Sorcerer, Class::Assassin]);
         frames(&mut f, &[Digit(5)]);
+        settle(&mut f);
         assert_eq!(f.banner(), Some(("A fled the fight!".to_string(), 0)));
         frames(&mut f, &[Down, Enter]);
         assert_eq!(stage(&f), "setup 0 name");
@@ -413,7 +523,9 @@ mod tests {
     #[test]
     fn result_quit_item() {
         let mut f = Flow::with_duel(["A", "B"], [Class::Sorcerer, Class::Assassin]);
-        frames(&mut f, &[Digit(5), Digit(3)]);
+        frames(&mut f, &[Digit(5)]);
+        settle(&mut f);
+        frames(&mut f, &[Digit(3)]);
         assert!(f.quit);
     }
 
@@ -422,5 +534,107 @@ mod tests {
         let mut f = Flow::with_duel(["A", "B"], [Class::Sorcerer, Class::Assassin]);
         frames(&mut f, &[Digit(5)]);
         assert_eq!(f.duel.as_ref().unwrap().end, Some(End::Fled { who: 0 }));
+    }
+
+    #[test]
+    fn enter_confirming_move_does_not_skip_it() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        f.step(&[Enter, Enter]);
+        assert_eq!(stage(&f), "animate");
+        assert_eq!(f.shown.as_ref().unwrap()[1].health, 100, "numbers change at impact, not on pick");
+        match &f.screen {
+            Screen::Animate { action, .. } => assert_eq!(action.t, 0.0),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn keys_during_animation_change_nothing() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(1)]);
+        frames(&mut f, &[Digit(2), Up, Down, Digit(1), Char('x'), Backspace]);
+        assert_eq!(stage(&f), "animate");
+        assert_eq!(f.duel.as_ref().unwrap().turn, 1);
+        settle(&mut f);
+        assert_eq!(stage(&f), "choose 1");
+        assert_eq!(f.duel.as_ref().unwrap().f[1].health, 90, "only the one attack landed");
+    }
+
+    #[test]
+    fn shown_numbers_change_at_impact() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(1)]);
+        f.update(0.5);
+        assert_eq!(f.shown.as_ref().unwrap()[1].health, 100);
+        assert!(!f.take_impact());
+        f.update(0.1);
+        assert!(f.take_impact());
+        assert_eq!(f.shown.as_ref().unwrap()[1].health, 90);
+        f.update(0.1);
+        assert!(!f.take_impact());
+    }
+
+    #[test]
+    fn skip_applies_impact_once() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(1)]);
+        f.step(&[Space]);
+        assert!(f.take_impact());
+        assert_eq!(f.shown.as_ref().unwrap()[1].health, 90);
+        f.step(&[Space]);
+        f.update(0.016);
+        assert_eq!(stage(&f), "choose 1");
+        assert_eq!(f.shown.as_ref().unwrap()[1].health, 90);
+    }
+
+    #[test]
+    fn knockout_collapses_before_result() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
+        f.duel.as_mut().unwrap().f[1].health = 10;
+        frames(&mut f, &[Digit(1), Space]);
+        f.update(0.016);
+        assert_eq!(stage(&f), "animate", "loser collapses first");
+        f.update(0.5);
+        let (poses, _) = f.body_state(0.0, 3.8);
+        assert!(poses[1].fall > 0.2);
+        f.step(&[Space]);
+        f.update(0.016);
+        assert_eq!(stage(&f), "result");
+        assert_eq!(f.body_state(0.0, 3.8).0[1].fall, 1.0, "stays down on the result screen");
+    }
+
+    #[test]
+    fn flee_fades_the_fleeing_fighter() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
+        frames(&mut f, &[Digit(5)]);
+        settle(&mut f);
+        assert!(f.body_state(0.0, 3.8).1[0] >= 0.99);
+        assert_eq!(f.body_state(0.0, 3.8).1[1], 0.0);
+    }
+
+    #[test]
+    fn attacker_lunges_mid_move() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
+        frames(&mut f, &[Digit(1)]);
+        f.update(0.55);
+        assert!(f.body_state(0.0, 3.8).0[0].root.z > 2.0);
+    }
+
+    #[test]
+    fn active_is_the_actor_while_animating() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(1)]);
+        assert_eq!(f.active(), 0);
+        settle(&mut f);
+        assert_eq!(f.active(), 1);
+    }
+
+    #[test]
+    fn result_lines_appear_at_impact() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Sorcerer, Class::Warrior]);
+        frames(&mut f, &[Digit(1)]);
+        assert_eq!(f.caption.len(), 1, "only the action line before impact");
+        f.step(&[Space]);
+        assert_eq!(f.caption[1], "B's shield absorbs 14 damage (11/25 remaining).");
     }
 }

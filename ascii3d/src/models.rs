@@ -43,7 +43,7 @@ pub struct Anchors {
 
 /// Local-space bounding sphere that holds every part of every pose.
 pub const BOUND_CENTER: Vec3 = Vec3::new(0.0, 1.0, 0.0);
-pub const BOUND_RADIUS: f32 = 1.7;
+pub const BOUND_RADIUS: f32 = 1.9;
 
 /// Part ids are `id_base + k`, `k < 40`.
 pub fn build(class: Class, pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) {
@@ -74,14 +74,18 @@ impl Kit {
 /// The armoured knight: plate torso and pauldrons, chainmail coif and arms, a tabard in
 /// the player's accent, and a sword.
 fn warrior(pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) {
-    let up = vec3(0.0, pose.breath * 0.02, 0.0);
+    // Upper body offset: breathing, crouch and lean move everything above the hips.
+    let up = vec3(0.0, pose.breath * 0.02 - pose.crouch * 0.12, pose.lean * 0.12);
     let legs = if chain_legs { Mat::Chain } else { Mat::Plate };
-    let hand_r = vec3(-0.33, 0.98, pose.arm_r * 0.4) + up;
-    let hand_l = vec3(0.33, 0.98, pose.arm_l * 0.4) + up;
-    let tip = hand_r + vec3(0.0, 0.08, 0.95);
+    let hand_r = vec3(-0.33, 0.98 + pose.weapon.max(0.0) * 0.32, pose.arm_r * 0.4) + up;
+    let hand_l = vec3(0.33, 0.98 + pose.guard * 0.22, pose.arm_l * 0.3 + pose.guard * 0.22) + up;
+    // The sword pitches up as it is raised and down through a cut.
+    let pitch = 0.08 + pose.weapon * 1.0;
+    let tip = hand_r + vec3(0.0, pitch.sin(), pitch.cos()) * 0.95;
+    let hip = vec3(0.0, 0.88 - pose.crouch * 0.12, 0.0);
     let mut k = Kit::new(id_base);
-    k.add(legs, Shape::Capsule { a: vec3(0.11, 0.88, 0.0), b: vec3(0.11, 0.1, 0.0), r: 0.085 });
-    k.add(legs, Shape::Capsule { a: vec3(-0.11, 0.88, 0.0), b: vec3(-0.11, 0.1, 0.0), r: 0.085 });
+    k.add(legs, Shape::Capsule { a: hip + vec3(0.11, 0.0, 0.0), b: vec3(0.11, 0.1, 0.0), r: 0.085 });
+    k.add(legs, Shape::Capsule { a: hip + vec3(-0.11, 0.0, 0.0), b: vec3(-0.11, 0.1, 0.0), r: 0.085 });
     k.add(Mat::Plate, Shape::RBox { c: vec3(0.0, 1.18, 0.0) + up, half: vec3(0.2, 0.26, 0.12), round: 0.06 });
     k.add(Mat::Plate, Shape::Sphere { c: vec3(0.27, 1.42, 0.0) + up, r: 0.105 });
     k.add(Mat::Plate, Shape::Sphere { c: vec3(-0.27, 1.42, 0.0) + up, r: 0.105 });
@@ -91,8 +95,9 @@ fn warrior(pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) 
     k.add(Mat::Chain, Shape::Sphere { c: vec3(0.0, 1.66, 0.0) + up, r: 0.16 });
     k.add(Mat::Chain, Shape::Capsule { a: vec3(0.0, 1.47, 0.0) + up, b: vec3(0.0, 1.53, 0.0) + up, r: 0.17 });
     k.add(Mat::Cloth, Shape::RBox { c: vec3(0.0, 1.1, -0.17) + up, half: vec3(0.22, 0.4, 0.02), round: 0.01 });
-    k.add(Mat::Blade, Shape::Capsule { a: hand_r + vec3(0.0, 0.0, 0.1), b: tip, r: 0.028 });
-    k.add(Mat::Plate, Shape::RBox { c: hand_r + vec3(0.0, 0.0, 0.08), half: vec3(0.11, 0.02, 0.02), round: 0.01 });
+    let dir = (tip - hand_r).normalize();
+    k.add(Mat::Blade, Shape::Capsule { a: hand_r + dir * 0.1, b: tip, r: 0.028 });
+    k.add(Mat::Plate, Shape::Capsule { a: hand_r + dir * 0.08 + vec3(0.11, 0.0, 0.0), b: hand_r + dir * 0.08 - vec3(0.11, 0.0, 0.0), r: 0.02 });
     // Front of the surcoat and a helmet plume, both in the player's accent.
     k.add(Mat::Cloth, Shape::RBox { c: vec3(0.0, 0.95, 0.13) + up, half: vec3(0.16, 0.2, 0.015), round: 0.01 });
     k.add(Mat::Cloak, Shape::Capsule { a: vec3(0.0, 1.8, 0.02) + up, b: vec3(0.0, 1.88, -0.2) + up, r: 0.045 });
@@ -108,12 +113,12 @@ fn warrior(pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) 
 fn sorcerer(pose: &Pose, id_base: u16) -> (Vec<Part>, Anchors) {
     let up = vec3(0.0, pose.breath * 0.02, 0.0);
     let lean = vec3(0.0, 0.0, pose.lean * 0.12);
-    let hand_r = vec3(-0.3, 1.02 + pose.weapon * 0.28, 0.16 + pose.arm_r * 0.3) + up;
+    let hand_r = vec3(-0.3, 1.02 + pose.weapon * 0.28, 0.16 + pose.arm_r * 0.15) + up;
     let hand_l = vec3(0.27, 1.0 + pose.guard * 0.3, 0.1 + pose.arm_l * 0.35) + up;
     // The staff leans toward the opponent as it is raised.
     let tilt = pose.weapon * 0.6;
     let dir = vec3(0.0, tilt.cos(), tilt.sin());
-    let top = hand_r + dir * 1.2;
+    let top = hand_r + dir * 1.1;
     let crystal = top + dir * 0.1;
     let mut k = Kit::new(id_base);
     k.add(Mat::Robe, Shape::Cone { a: vec3(0.0, 0.1, 0.0), b: vec3(0.0, 1.3, 0.0) + up + lean, ra: 0.36, rb: 0.16 });
@@ -271,5 +276,43 @@ pub mod tests {
             assert!(m.is_hero(), "{m:?}");
         }
         assert!(!Mat::Orb.is_hero());
+    }
+
+    fn extremes() -> Vec<Pose> {
+        let mut v = vec![Pose::default()];
+        for k in [-1.0f32, 1.0] {
+            v.push(Pose { weapon: k, arm_r: k, arm_l: k, guard: k, lean: k * 0.6, crouch: 0.6, breath: k * 2.0, ..Pose::default() });
+            v.push(Pose { weapon: k, arm_r: -k, guard: 1.0, lean: 0.6, ..Pose::default() });
+        }
+        v
+    }
+
+    #[test]
+    fn extreme_poses_inside_bound() {
+        for class in Class::ALL {
+            for (n, pose) in extremes().iter().enumerate() {
+                let (parts, _) = build(class, pose, 10, true);
+                assert_inside_bound(&parts, &format!("{class:?} pose {n}"));
+            }
+        }
+    }
+
+    #[test]
+    fn warrior_sword_and_shield_follow_pose() {
+        let (_, rest) = build(Class::Warrior, &Pose::default(), 10, true);
+        let (_, up) = build(Class::Warrior, &Pose { weapon: 1.0, ..Pose::default() }, 10, true);
+        let (_, down) = build(Class::Warrior, &Pose { weapon: -0.7, arm_r: 0.9, ..Pose::default() }, 10, true);
+        assert!(up.weapon_tip.y > rest.weapon_tip.y + 0.4, "raised sword");
+        assert!(down.weapon_tip.y < rest.weapon_tip.y, "cut down");
+        let shield = |p: &Pose| {
+            let (parts, _) = build(Class::Warrior, p, 10, true);
+            parts.iter().find_map(|q| match q.shape {
+                Shape::RBox { c, half, .. } if q.mat == Mat::Plate && half.z > 0.12 => Some(c),
+                _ => None,
+            }).unwrap()
+        };
+        assert!(shield(&Pose { guard: 1.0, ..Pose::default() }).z > shield(&Pose::default()).z + 0.15);
+        let (_, lean) = build(Class::Warrior, &Pose { lean: 1.0, ..Pose::default() }, 10, true);
+        assert!(lean.chest.z > rest.chest.z + 0.05);
     }
 }
