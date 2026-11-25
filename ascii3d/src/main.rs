@@ -332,7 +332,9 @@ async fn main() {
             break;
         }
         // Screenshots are frozen at the scripted moment.
-        world.tick(&mut flow, dt, args.shot.is_none());
+        // Screenshots freeze once the scripted keys run out; while they play, the
+        // duel runs live so menus and animations behave as for a player.
+        world.tick(&mut flow, dt, args.shot.is_none() || !script.is_empty() || !inputs.is_empty());
         let scene = &mut world.scene;
         let active = flow.active();
         let hotkeys = !flow.typing() && args.shot.is_none();

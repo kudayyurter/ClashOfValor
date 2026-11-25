@@ -127,6 +127,77 @@ fn fill(shown: f32, max: i32) -> f32 {
     if max > 0 { (shown / max as f32).clamp(0.0, 1.0) } else { 0.0 }
 }
 
+/// `s` cut to at most `max_chars` characters, ending in `…` when cut.
+pub fn fit(s: &str, max_chars: usize) -> String {
+    let n = s.chars().count();
+    if n <= max_chars {
+        return s.to_string();
+    }
+    if max_chars < 2 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}
+
+/// Word-wrap to lines of at most `max_chars`; over-long words are split. An empty
+/// string gives no lines.
+pub fn wrap(s: &str, max_chars: usize) -> Vec<String> {
+    let max = max_chars.max(1);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        // Hard-split words that can never fit on one line.
+        while word.len() > max {
+            if !cur.is_empty() {
+                lines.push(std::mem::take(&mut cur));
+            }
+            lines.push(word.drain(..max).collect());
+        }
+        let w: String = word.into_iter().collect();
+        if w.is_empty() {
+            continue;
+        }
+        let need = if cur.is_empty() { w.chars().count() } else { cur.chars().count() + 1 + w.chars().count() };
+        if need > max {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(&w);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// Characters of `size` px text that fit in `width` px.
+pub fn chars_in(font: &Font, width: f32, size: u16) -> usize {
+    (width / text_w(font, "M", size).max(1.0)).floor().max(0.0) as usize
+}
+
+/// A box-drawing frame (`┌─┐│└┘`) around the rectangle, in glyphs.
+pub fn draw_frame(font: &Font, x: f32, y: f32, w: f32, h: f32, color: Color) {
+    let size = 13;
+    let cw = text_w(font, "─", size).max(1.0);
+    let n = ((w / cw).round() as usize).max(2);
+    let top = format!("┌{}┐", "─".repeat(n - 2));
+    let bottom = format!("└{}┘", "─".repeat(n - 2));
+    draw_text_ex(&top, x, y + 9.0, tp(font, size, color));
+    draw_text_ex(&bottom, x, y + h + 3.0, tp(font, size, color));
+    let right = x + (n - 1) as f32 * cw;
+    let mut yy = y + 9.0 + 12.0;
+    while yy < y + h + 3.0 - 4.0 {
+        draw_text_ex("│", x, yy, tp(font, size, color));
+        draw_text_ex("│", right, yy, tp(font, size, color));
+        yy += 12.0;
+    }
+}
+
 pub fn menu_height(m: &Menu) -> f32 {
     m.items.len() as f32 * ROW
 }
@@ -143,7 +214,8 @@ pub fn draw_menu(font: &Font, m: &Menu, cx: f32, top: f32) {
     let label_w = rows.iter().map(|(l, _)| text_w(font, l, FONT)).fold(0.0, f32::max);
     let note_w = rows.iter().map(|(_, n)| if n.is_empty() { 0.0 } else { text_w(font, n, 13) + 14.0 }).fold(0.0, f32::max);
     let x = (cx - (label_w + note_w) * 0.5).max(6.0);
-    draw_rectangle(x - 8.0, top - 4.0, label_w + note_w + 16.0, menu_height(m) + 8.0, PANEL_BG);
+    draw_rectangle(x - 8.0, top - 6.0, label_w + note_w + 16.0, menu_height(m) + 12.0, PANEL_BG);
+    draw_frame(font, x - 12.0, top - 10.0, label_w + note_w + 26.0, menu_height(m) + 16.0, Color::new(0.4, 0.42, 0.5, 1.0));
     for (i, (label, note)) in rows.iter().enumerate() {
         let y = top + i as f32 * ROW;
         let on = m.enabled[i];
@@ -188,53 +260,57 @@ pub const MANA: Vec3 = Vec3::new(0.3, 0.85, 1.0);
 pub fn draw_panels(font: &Font, views: [PanelView; 2]) {
     let sw = screen_width();
     let w = (sw * 0.42).min(380.0);
-    let h = 96.0;
+    let h = 104.0;
     for (i, v) in views.iter().enumerate() {
         let x = if i == 0 { 12.0 } else { sw - w - 12.0 };
-        let y = 30.0;
+        let y = 28.0;
+        let accent = rgb(v.accent);
         draw_rectangle(x, y, w, h, PANEL_BG);
-        if v.active {
-            draw_rectangle_lines(x, y, w, h, 2.0, rgb(v.accent));
-        }
+        // Header strip in the player's colour.
+        draw_rectangle(x + 4.0, y + 5.0, w - 8.0, 20.0, Color::new(v.accent.x, v.accent.y, v.accent.z, if v.active { 0.32 } else { 0.16 }));
+        let frame = if v.active { accent } else { Color::new(0.35, 0.37, 0.45, 1.0) };
+        draw_frame(font, x, y, w, h, frame);
         let f = v.fighter;
-        let pad = x + 10.0;
-        draw_text_ex(&f.name, pad, y + 18.0, tp(font, FONT, rgb(v.accent)));
-        let cls = match v.metal {
-            Some(m) => format!("{}  ·  {m} armour", f.class.name()),
-            None => f.class.name().to_string(),
-        };
-        draw_text_ex(&cls, pad + text_w(font, &f.name, FONT) + 10.0, y + 18.0, tp(font, 13, DIM));
-        let bw = w - 20.0;
-        bar(font, pad, y + 26.0, bw, "HP", fill(v.bars[0], f.max_health), &format!("{}/{}", f.health, f.max_health), HEALTH);
+        let pad = x + 12.0;
+        let inner = w - 24.0;
+        let head = fit(&format!("{}  ·  {}", f.name, f.class.name()), chars_in(font, inner, 15));
+        draw_text_ex(&head, pad, y + 20.0, tp(font, 15, TEXT));
+        let bw = inner;
+        bar(font, pad, y + 32.0, bw, "HP", fill(v.bars[0], f.max_health), &format!("{}/{}", f.health, f.max_health), HEALTH);
         // Stamina has no cap: the bar fills at 100 and the number shows the real value.
-        bar(font, pad, y + 42.0, bw, "ST", stamina_fill(v.bars[1]), &f.stamina.to_string(), STAMINA);
-        let potions = match f.class {
+        bar(font, pad, y + 48.0, bw, "ST", stamina_fill(v.bars[1]), &f.stamina.to_string(), STAMINA);
+        let (third, potions) = match f.class {
             Class::Warrior => {
-                bar(font, pad, y + 58.0, bw, "SH", fill(v.bars[2], f.max_shield), &format!("{}/{}", f.shield, f.max_shield), SHIELD);
-                format!("Potions {}", f.health_potions)
+                bar(font, pad, y + 64.0, bw, "SH", fill(v.bars[2], f.max_shield), &format!("{}/{}", f.shield, f.max_shield), SHIELD);
+                (v.metal.map(|m| format!("{m} armour")), format!("Potions {}", f.health_potions))
             }
             Class::Sorcerer => {
-                bar(font, pad, y + 58.0, bw, "MP", fill(v.bars[2], f.max_mana), &format!("{}/{}", f.mana, f.max_mana), MANA);
-                format!("Potions {}   Mana potions {}", f.health_potions, f.mana_potions)
+                bar(font, pad, y + 64.0, bw, "MP", fill(v.bars[2], f.max_mana), &format!("{}/{}", f.mana, f.max_mana), MANA);
+                (None, format!("Potions {}  Mana potions {}", f.health_potions, f.mana_potions))
             }
-            Class::Assassin => {
-                draw_text_ex(format!("Crit x{:.1}", f.crit), pad, y + 68.0, tp(font, 13, DIM));
-                format!("Potions {}", f.health_potions)
-            }
+            Class::Assassin => (Some(format!("Crit x{:.1}", f.crit)), format!("Potions {}", f.health_potions)),
         };
-        draw_text_ex(&potions, pad, y + 88.0, tp(font, 13, DIM));
+        let line = match third {
+            Some(t) => format!("{potions}  ·  {t}"),
+            None => potions,
+        };
+        draw_text_ex(&fit(&line, chars_in(font, inner, 13)), pad, y + 92.0, tp(font, 13, DIM));
     }
 }
 
 /// Narration lines, centred, ending just above `bottom`.
 pub fn draw_caption(font: &Font, lines: &[String], bottom: f32) {
     let cx = screen_width() * 0.5;
-    let n = lines.len() as f32;
-    for (i, l) in lines.iter().enumerate() {
+    // Wrap each narration line to the window, keeping the first line bright.
+    let max = chars_in(font, screen_width() * 0.9, 14);
+    let wrapped: Vec<(bool, String)> =
+        lines.iter().enumerate().flat_map(|(i, l)| wrap(l, max).into_iter().map(move |w| (i == 0, w))).collect();
+    let n = wrapped.len() as f32;
+    for (i, (first, l)) in wrapped.iter().enumerate() {
         let y = bottom - (n - i as f32) * 18.0 + 13.0;
         let w = text_w(font, l, 14);
         draw_rectangle(cx - w * 0.5 - 6.0, y - 13.0, w + 12.0, 18.0, PANEL_BG);
-        text_centered(font, l, cx, y, 14, if i == 0 { TEXT } else { DIM });
+        text_centered(font, l, cx, y, 14, if *first { TEXT } else { DIM });
     }
 }
 
@@ -244,6 +320,7 @@ pub fn draw_banner(font: &Font, text: &str, color: Vec3) {
     let w = text_w(font, text, size);
     let y = sh * 0.36;
     draw_rectangle(sw * 0.5 - w * 0.5 - 24.0, y - 40.0, w + 48.0, 58.0, PANEL_BG);
+    draw_frame(font, sw * 0.5 - w * 0.5 - 28.0, y - 46.0, w + 56.0, 66.0, rgb(color));
     text_centered(font, text, sw * 0.5, y, size, rgb(color));
 }
 
@@ -337,5 +414,23 @@ mod tests {
         assert_eq!(stamina_fill(100.0), 1.0);
         assert_eq!(stamina_fill(50.0), 0.5);
         assert_eq!(stamina_fill(-5.0), 0.0);
+    }
+
+    #[test]
+    fn fit_truncates_with_ellipsis() {
+        assert_eq!(fit("abcdef", 10), "abcdef");
+        let f = fit("abcdefghijk", 6);
+        assert_eq!(f.chars().count(), 6);
+        assert!(f.ends_with('…'));
+        assert_eq!(fit("ab", 1), "");
+        assert_eq!(fit("ab", 2), "ab");
+    }
+
+    #[test]
+    fn wrap_breaks_on_words() {
+        assert_eq!(wrap("aa bb cc", 5), vec!["aa bb", "cc"]);
+        assert_eq!(wrap("abcdefgh", 3), vec!["abc", "def", "gh"]);
+        assert!(wrap("", 5).is_empty());
+        assert!(wrap("one two three four five", 9).iter().all(|l| l.chars().count() <= 9));
     }
 }
