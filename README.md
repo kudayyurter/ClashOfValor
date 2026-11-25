@@ -4,6 +4,14 @@ A turn-based terminal RPG in C++. Pick a class, fight a randomly generated
 opponent or a friend at the same keyboard, and carry your character forward
 between sessions.
 
+## The future: Clash of Valor 3D
+
+The `ascii-3d` branch holds a prototype of where the game is headed: a real-time 3D world rendered entirely in glyphs, with a walking knight, armour metals that each have their own glyph set, chainmail, wind-blown grass and a campfire. It lives in [`ascii3d/`](ascii3d/README.md) as a Rust project, beside the current C++ game, which is unchanged.
+
+```
+cd ascii3d && cargo run --release
+```
+
 ## Build and run
 
 ```
