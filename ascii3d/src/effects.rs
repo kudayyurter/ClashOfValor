@@ -270,7 +270,12 @@ impl Fx {
             self.burst(at, 16, Kind::Spark, vec3(1.0, 0.85, 0.5));
         }
         let feet = |b: &Body| b.to_world(vec3(0.0, 0.1, 0.0));
-        let above = |b: &Body| b.to_world(b.anchors.head + vec3(0.0, 0.35, 0.0));
+        // Numbers start just above the name tag (2.5 m over the upright body).
+        let above = |b: &Body| {
+            let (s, c) = b.yaw.sin_cos();
+            let r = b.pose.root;
+            b.pos + vec3(r.x * c + r.z * s, 2.85, -r.x * s + r.z * c)
+        };
         for e in &a.res.events {
             match *e {
                 Event::Hit { target, absorbed, damage, crit } => {

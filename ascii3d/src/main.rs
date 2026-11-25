@@ -9,7 +9,7 @@
 //!
 //! `--shot out.png` renders one frame to a PNG and exits. With `--duel a,b` the duel
 //! starts without setup; `--moves 1,2` plays menu choices first; `--keys` types
-//! scripted keys (one per frame; `|` Enter, `<` Up, `>` Down, `#` Backspace).
+//! scripted keys (one per frame; `|` Enter, `<` Up, `>` Down, `#` Backspace, `~` Esc).
 
 mod anim;
 mod ascii;
@@ -174,8 +174,18 @@ impl World {
 
 /// This frame's key presses as flow inputs. A digit arrives as both `Digit` and `Char`;
 /// the flow uses whichever fits the screen.
-fn read_inputs() -> Vec<Input> {
+fn read_inputs(backspace_held: &mut f32, dt: f32) -> Vec<Input> {
     let mut v = Vec::new();
+    // Holding Backspace repeats after 0.4 s, then every 0.05 s.
+    if is_key_down(KeyCode::Backspace) && !is_key_pressed(KeyCode::Backspace) {
+        let before = *backspace_held;
+        *backspace_held += dt;
+        if *backspace_held > 0.4 && ((*backspace_held - 0.4) / 0.05).floor() > ((before - 0.4).max(0.0) / 0.05).floor() {
+            v.push(Input::Backspace);
+        }
+    } else {
+        *backspace_held = 0.0;
+    }
     let keys = [
         (KeyCode::Up, Input::Up),
         (KeyCode::Down, Input::Down),
@@ -222,6 +232,7 @@ fn scripted(c: char) -> Vec<Input> {
         '<' => vec![Input::Up],
         '>' => vec![Input::Down],
         '#' => vec![Input::Backspace],
+        '~' => vec![Input::Esc],
         '1'..='9' => vec![Input::Digit(c as u8 - b'0'), Input::Char(c)],
         ' ' => vec![Input::Space, Input::Char(' ')],
         _ => vec![Input::Char(c)],
@@ -311,6 +322,9 @@ async fn main() {
     }
     let mut script: std::collections::VecDeque<char> = args.keys.chars().collect();
     let mut bars: Option<[[f32; 3]; 2]> = None;
+    let mut backspace_held = 0.0f32;
+    // Developer readout (fps, raymarch, grid) toggled with F3.
+    let mut show_info = false;
     // The camera distance is fixed: there is no zoom.
     let (mut cam_yaw, mut cam_pitch, cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
@@ -325,7 +339,7 @@ async fn main() {
         frame += 1;
 
         // ---- input -------------------------------------------------------------
-        let inputs = if args.shot.is_some() { script.pop_front().map(scripted).unwrap_or_default() } else { read_inputs() };
+        let inputs = if args.shot.is_some() { script.pop_front().map(scripted).unwrap_or_default() } else { read_inputs(&mut backspace_held, dt) };
         flow.step(&inputs);
         if flow.quit {
             break;
@@ -360,6 +374,9 @@ async fn main() {
         }
         if hotkeys && is_key_pressed(KeyCode::G) {
             size_i = (size_i + 1) % SIZES.len();
+        }
+        if args.shot.is_none() && is_key_pressed(KeyCode::F3) {
+            show_info = !show_info;
         }
         if hotkeys && is_key_pressed(KeyCode::L) {
             scene.chain_legs = !scene.chain_legs;
@@ -479,8 +496,16 @@ async fn main() {
         let names = flow.names();
         for (i, b) in scene.bodies.iter().enumerate() {
             let name = &names[i];
-            if let Some((sp, _)) = cam.project(b.to_world(vec3(0.0, 2.5, 0.0))) {
+            // Above the upright body (not tilted with a fall), kept on screen and below
+            // the status panels.
+            let anchor = b.pos + {
+                let (s, c) = b.yaw.sin_cos();
+                let r = b.pose.root;
+                vec3(r.x * c + r.z * s, 2.5, -r.x * s + r.z * c)
+            };
+            if let Some((sp, _)) = cam.project(anchor) {
                 let w = measure_text(name, Some(&font), 14, 1.0).width;
+                let sp = vec2(sp.x.clamp(w * 0.5 + 6.0, screen_width() - w * 0.5 - 6.0), sp.y.max(152.0));
                 let c = Color::new(b.accent.x, b.accent.y, b.accent.z, 1.0 - b.dim * 0.6);
                 draw_text_ex(name, sp.x - w * 0.5, sp.y, TextParams { font: Some(&font), font_size: 14, color: c, ..Default::default() });
                 if flow.duel.is_some() && i == active && flow.banner().is_none() {
@@ -491,8 +516,12 @@ async fn main() {
             }
         }
 
-        draw_ui(&font, &opts, fs, cols, rows, deferred.len(), render_ms);
-        draw_duel_ui(&font, &flow, scene, bars, frame);
+        if screen_width() < 640.0 || screen_height() < 400.0 {
+            ui::draw_too_small(&font);
+        } else {
+            draw_ui(&font, &opts, fs, cols, rows, deferred.len(), render_ms, show_info, &flow, scene);
+            draw_duel_ui(&font, &flow, scene, bars, frame);
+        }
 
         if let (Some(rt), Some(path)) = (shot_rt, &args.shot) {
             set_default_camera();
@@ -504,9 +533,15 @@ async fn main() {
     }
 }
 
-fn draw_ui(font: &Font, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred: usize, render_ms: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_ui(font: &Font, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred: usize, render_ms: f32, show_info: bool, flow: &Flow, scene: &Scene) {
     let (sw, sh) = (screen_width(), screen_height());
     let tp = |color| TextParams { font: Some(font), font_size: 13, color, ..Default::default() };
+    draw_rectangle(0.0, sh - 18.0, sw, 18.0, Color::new(0.0, 0.0, 0.0, 0.75));
+    ui::text_centered(font, &help_text(flow, scene), sw * 0.5, sh - 5.0, 12, Color::new(0.5, 0.52, 0.6, 1.0));
+    if !show_info {
+        return;
+    }
     draw_rectangle(0.0, 0.0, sw, 22.0, Color::new(0.0, 0.0, 0.0, 0.75));
     let info = format!(
         "Clash of Valor 3D  {} fps  raymarch {:.1} ms  grid {}x{} @{}px  fine cells {}  edges {}  fine {}",
@@ -524,9 +559,25 @@ fn draw_ui(font: &Font, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred
         },
     );
     draw_text_ex(&info, 8.0, 15.0, tp(ui::DIM));
-    let help = "arrows/digits choose  Enter confirm  M/N armour  RMB orbit  E edges  F fine  G glyphs  Esc quit";
-    draw_rectangle(0.0, sh - 18.0, sw, 18.0, Color::new(0.0, 0.0, 0.0, 0.75));
-    ui::text_centered(font, help, sw * 0.5, sh - 5.0, 12, Color::new(0.5, 0.52, 0.6, 1.0));
+}
+
+/// The keys that matter on this screen.
+fn help_text(flow: &Flow, scene: &Scene) -> String {
+    if flow.popup.is_some() {
+        return "↑↓ or number keys choose · Enter confirm · Esc back".into();
+    }
+    match &flow.screen {
+        Screen::Setup { stage: SetupStage::Name, .. } => "Type a name · Enter confirm · Esc back".into(),
+        Screen::Setup { menu, .. } => format!("↑↓ or 1-{} choose · Enter confirm · Esc back", menu.items.len()),
+        Screen::Choose { .. } | Screen::Animate { .. } => {
+            let mut s = "↑↓ or 1-5 choose · Enter confirm · Space skip · Esc pause".to_string();
+            if scene.bodies.get(flow.active()).is_some_and(|b| b.class == Class::Warrior) {
+                s += " · M/N armour";
+            }
+            s
+        }
+        Screen::Result { .. } => "↑↓ or 1-3 choose · Enter confirm · Esc pause".into(),
+    }
 }
 
 /// Setup prompts, status panels, the move menu, the caption and the result banner.
@@ -571,7 +622,10 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
         }
         Screen::Choose { menu } => {
             let top = menu_bottom - ui::menu_height(menu);
-            ui::draw_caption(font, &flow.caption, top - 10.0);
+            if let Some((text, who)) = flow.header() {
+                ui::draw_menu_header(font, &text, scene.bodies[who].accent, cx, top - 16.0);
+            }
+            ui::draw_caption(font, &flow.caption, top - 36.0);
             ui::draw_menu(font, menu, cx, top);
         }
         Screen::Animate { .. } => {
@@ -585,5 +639,12 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
                 ui::draw_banner(font, &text, who.map_or(Vec3::splat(0.75), |w| scene.bodies[w].accent));
             }
         }
+    }
+    // Move log under the left panel, when there's room.
+    if flow.duel.is_some() && sh >= 600.0 {
+        ui::draw_log(font, &flow.log, 12.0, 140.0, (sw * 0.3).min(300.0));
+    }
+    if let Some(p) = &flow.popup {
+        ui::draw_popup(font, p);
     }
 }

@@ -144,11 +144,13 @@ impl Flow {
         let f = &d.f[d.turn];
         let ms = moves(f.class);
         let checks: Vec<Result<(), String>> = ms.iter().map(|&m| availability(f, m)).collect();
-        Menu::new(
+        let mut menu = Menu::new(
             ms.iter().map(|m| m.label().to_string()).collect(),
-            checks.iter().map(|c| c.clone().err().unwrap_or_default()).collect(),
+            ms.iter().map(|&m| crate::ui::move_cost(f, m)).collect(),
             checks.iter().map(|c| c.is_ok()).collect(),
-        )
+        );
+        menu.reasons = checks.iter().map(|c| c.clone().err().unwrap_or_default()).collect();
+        menu
     }
 
     fn bot_turn(&self) -> bool {
@@ -193,6 +195,9 @@ impl Flow {
         }
         self.since_impact += dt;
         self.menu_wait = (self.menu_wait - dt).max(0.0);
+        if let Screen::Choose { menu } | Screen::Result { menu } = &mut self.screen {
+            menu.tick(dt);
+        }
         if matches!(self.screen, Screen::Choose { .. }) && self.bot_turn() {
             self.bot_wait += dt;
             if self.bot_wait >= bot::THINK {
@@ -769,7 +774,7 @@ mod tests {
         match &f.screen {
             Screen::Choose { menu } => {
                 assert!(!menu.enabled[1]);
-                assert_eq!(menu.notes[1], "shield already full");
+                assert_eq!(menu.reasons[1], "shield already full");
             }
             _ => unreachable!(),
         }
@@ -1242,5 +1247,24 @@ mod tests {
         frames(&mut f, &typed("A"));
         frames(&mut f, &[Enter, Digit(1)]);
         assert_eq!(f.active(), 1);
+    }
+
+    #[test]
+    fn dimmed_press_flashes() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(2)]);
+        match &f.screen {
+            Screen::Choose { menu } => {
+                assert!(menu.flash > 0.0 && menu.flash_row == 1);
+                assert_eq!(menu.reasons[1], "shield already full");
+                assert_eq!(menu.notes[0], "10 ST · 10 dmg");
+            }
+            _ => unreachable!(),
+        }
+        f.update(0.5);
+        match &f.screen {
+            Screen::Choose { menu } => assert_eq!(menu.flash, 0.0),
+            _ => unreachable!(),
+        }
     }
 }

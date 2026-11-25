@@ -22,6 +22,8 @@ pub struct Menu {
     pub notes: Vec<String>,
     pub enabled: Vec<bool>,
     pub sel: usize,
+    /// Why a dimmed row can't be picked; "" for enabled rows.
+    pub reasons: Vec<String>,
     /// Seconds left on a "can't pick that" flash, and which row.
     pub flash: f32,
     pub flash_row: usize,
@@ -30,7 +32,8 @@ pub struct Menu {
 impl Menu {
     pub fn new(items: Vec<String>, notes: Vec<String>, enabled: Vec<bool>) -> Menu {
         let sel = enabled.iter().position(|&e| e).unwrap_or(0);
-        Menu { items, notes, enabled, sel, flash: 0.0, flash_row: 0 }
+        let reasons = vec![String::new(); items.len()];
+        Menu { items, notes, enabled, reasons, sel, flash: 0.0, flash_row: 0 }
     }
 
     /// Flash a row (a dimmed row the player tried to pick).
@@ -39,6 +42,11 @@ impl Menu {
             self.flash = 0.4;
             self.flash_row = i;
         }
+    }
+
+    /// Let a flash fade.
+    pub fn tick(&mut self, dt: f32) {
+        self.flash = (self.flash - dt).max(0.0);
     }
 
     /// A menu whose items are all enabled and have no notes.
@@ -126,6 +134,39 @@ pub fn text_w(font: &Font, s: &str, size: u16) -> f32 {
 /// Draw `s` centred on `cx` with its baseline at `y`.
 pub fn text_centered(font: &Font, s: &str, cx: f32, y: f32, size: u16, color: Color) {
     draw_text_ex(s, cx - text_w(font, s, size) * 0.5, y, tp(font, size, color));
+}
+
+/// The cost-and-effect column for a move, from the fighter's point of view.
+pub fn move_cost(f: &Fighter, m: crate::rules::Move) -> String {
+    use crate::rules::Move::*;
+    match m {
+        Attack => format!("10 ST · {} dmg", f.damage),
+        RaiseShield => "15 ST · +25 shield".to_string(),
+        CritAttack => format!("20 ST · {} dmg", (f.damage as f32 * f.crit) as i32),
+        FireOrb => format!("10 MP 10 ST · {} dmg", f.damage + 2),
+        HealthPotion => format!("+50 HP · {} left", f.health_potions),
+        ManaPotion => format!("+50 MP · {} left", f.mana_potions),
+        Rest if f.class == Class::Sorcerer => "+10 HP +25 ST +20 MP".to_string(),
+        Rest => "+10 HP +25 ST".to_string(),
+        Flee => "ends the duel".to_string(),
+    }
+}
+
+/// Health bar colour: green above half, gold to a quarter, red below; pulses when
+/// nearly dead.
+pub fn hp_color(frac: f32, time: f32) -> Vec3 {
+    let base = if frac > 0.5 {
+        HEALTH
+    } else if frac > 0.25 {
+        Vec3::new(0.95, 0.75, 0.25)
+    } else {
+        Vec3::new(0.95, 0.3, 0.25)
+    };
+    if frac < 0.15 {
+        base * (0.75 + 0.25 * (time * std::f32::consts::TAU * 2.0).cos())
+    } else {
+        base
+    }
 }
 
 /// Stamina has no cap: its bar fills against 100.
@@ -216,20 +257,29 @@ pub fn menu_height(m: &Menu) -> f32 {
 /// The option list as a block centred on `cx`. The selected row is drawn in reverse
 /// video; disabled rows are dimmed and show their note.
 pub fn draw_menu(font: &Font, m: &Menu, cx: f32, top: f32) {
-    let rows: Vec<(String, String)> = m
+    // Enabled rows show their note (cost, description); dimmed rows show why not.
+    let rows: Vec<(String, String, bool)> = m
         .items
         .iter()
         .enumerate()
-        .map(|(i, it)| (format!(" {} {it} ", i + 1), m.notes.get(i).cloned().unwrap_or_default()))
+        .map(|(i, it)| {
+            let reason = m.reasons.get(i).filter(|r| !r.is_empty() && !m.enabled[i]);
+            let note = reason.or(m.notes.get(i)).cloned().unwrap_or_default();
+            (format!(" {} {it} ", i + 1), note, reason.is_some())
+        })
         .collect();
-    let label_w = rows.iter().map(|(l, _)| text_w(font, l, FONT)).fold(0.0, f32::max);
-    let note_w = rows.iter().map(|(_, n)| if n.is_empty() { 0.0 } else { text_w(font, n, 13) + 14.0 }).fold(0.0, f32::max);
+    let label_w = rows.iter().map(|(l, _, _)| text_w(font, l, FONT)).fold(0.0, f32::max);
+    let note_w = rows.iter().map(|(_, n, _)| if n.is_empty() { 0.0 } else { text_w(font, n, 13) + 14.0 }).fold(0.0, f32::max);
     let x = (cx - (label_w + note_w) * 0.5).max(6.0);
     draw_rectangle(x - 8.0, top - 6.0, label_w + note_w + 16.0, menu_height(m) + 12.0, PANEL_BG);
     draw_frame(font, x - 12.0, top - 10.0, label_w + note_w + 26.0, menu_height(m) + 16.0, Color::new(0.4, 0.42, 0.5, 1.0));
-    for (i, (label, note)) in rows.iter().enumerate() {
+    for (i, (label, note, why)) in rows.iter().enumerate() {
         let y = top + i as f32 * ROW;
         let on = m.enabled[i];
+        let flash = if m.flash > 0.0 && m.flash_row == i { m.flash / 0.4 } else { 0.0 };
+        if flash > 0.0 {
+            draw_rectangle(x, y, label_w + note_w, ROW - 2.0, Color::new(0.85, 0.3, 0.25, 0.35 * flash));
+        }
         if i == m.sel && on {
             draw_rectangle(x, y, label_w, ROW - 2.0, TEXT);
             draw_text_ex(label, x, y + 15.0, tp(font, FONT, Color::new(0.03, 0.03, 0.07, 1.0)));
@@ -237,10 +287,94 @@ pub fn draw_menu(font: &Font, m: &Menu, cx: f32, top: f32) {
             draw_text_ex(label, x, y + 15.0, tp(font, FONT, if on { TEXT } else { Color::new(0.4, 0.4, 0.46, 1.0) }));
         }
         if !note.is_empty() {
-            draw_text_ex(note, x + label_w + 14.0, y + 15.0, tp(font, 13, DIM));
+            let c = if *why { Color::new(0.85, 0.45 + 0.4 * flash, 0.4 + 0.4 * flash, 1.0) } else { DIM };
+            draw_text_ex(note, x + label_w + 14.0, y + 15.0, tp(font, 13, c));
         }
     }
 }
+
+/// "Ann's move · Turn 3/40" in the player's colour, centred just above a menu.
+pub fn draw_menu_header(font: &Font, text: &str, accent: Vec3, cx: f32, y: f32) {
+    let w = text_w(font, text, 15);
+    draw_rectangle(cx - w * 0.5 - 10.0, y - 15.0, w + 20.0, 21.0, Color::new(accent.x, accent.y, accent.z, 0.28));
+    text_centered(font, text, cx, y, 15, TEXT);
+}
+
+/// The last few moves, newest at the bottom.
+pub fn draw_log(font: &Font, lines: &[String], x: f32, y: f32, w: f32) {
+    if lines.is_empty() {
+        return;
+    }
+    let h = lines.len() as f32 * 15.0 + 10.0;
+    draw_rectangle(x, y, w, h, Color::new(0.0, 0.0, 0.0, 0.55));
+    let max = chars_in(font, w - 12.0, 12);
+    let n = lines.len();
+    for (i, l) in lines.iter().enumerate() {
+        let a = 0.45 + 0.55 * (i + 1) as f32 / n as f32;
+        draw_text_ex(fit(l, max), x + 6.0, y + 16.0 + i as f32 * 15.0, tp(font, 12, Color::new(0.85, 0.86, 0.92, a)));
+    }
+}
+
+/// A centred, framed plate over a dimmed scene.
+fn plate(font: &Font, w: f32, h: f32) -> (f32, f32) {
+    let (sw, sh) = (screen_width(), screen_height());
+    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.45));
+    let (x, y) = ((sw - w) * 0.5, (sh - h) * 0.5);
+    draw_rectangle(x, y, w, h, Color::new(0.02, 0.02, 0.05, 0.95));
+    draw_frame(font, x, y, w, h, Color::new(0.75, 0.62, 0.3, 1.0));
+    (x, y)
+}
+
+pub const HOW_TO: &[&str] = &[
+    "Take turns. Knock your opponent's health to 0 to win.",
+    "Each fighter gets 40 turns; then higher health % wins.",
+    "",
+    "Warrior   Attack 10 ST: 10 dmg.  Raise shield 15 ST: +25 shield.",
+    "          The shield soaks damage before health.",
+    "Assassin  Attack 10 ST: 10 dmg.  Crit 20 ST: 15 dmg.",
+    "Sorcerer  Fire orb 10 MP + 10 ST: 12 dmg.  Mana potion +50 MP.",
+    "Everyone  Health potion +50 HP.  Rest +10 HP +25 ST (+20 MP).",
+    "          Flee ends the duel with no winner.",
+    "",
+    "Arrows or number keys choose, Enter confirms, Space skips a move,",
+    "Esc pauses. Right-drag turns the camera.",
+];
+
+/// Pause menu, how-to-play page, or flee confirm, over everything else.
+pub fn draw_popup(font: &Font, popup: &crate::flow::Popup) {
+    use crate::flow::Popup;
+    let cx = screen_width() * 0.5;
+    match popup {
+        Popup::Pause { menu } => {
+            let (_, y) = plate(font, 340.0, menu_height(menu) + 70.0);
+            text_centered(font, "Paused", cx, y + 30.0, 18, Color::new(0.95, 0.8, 0.4, 1.0));
+            draw_menu(font, menu, cx, y + 46.0);
+        }
+        Popup::HowTo => {
+            let w = (screen_width() - 40.0).min(620.0);
+            let (x, y) = plate(font, w, HOW_TO.len() as f32 * 17.0 + 70.0);
+            text_centered(font, "How to play", cx, y + 28.0, 18, Color::new(0.95, 0.8, 0.4, 1.0));
+            let max = chars_in(font, w - 30.0, 13);
+            for (i, l) in HOW_TO.iter().enumerate() {
+                draw_text_ex(fit(l, max), x + 16.0, y + 52.0 + i as f32 * 17.0, tp(font, 13, TEXT));
+            }
+            text_centered(font, "press any key", cx, y + 52.0 + HOW_TO.len() as f32 * 17.0 + 4.0, 12, DIM);
+        }
+        Popup::ConfirmFlee { menu } => {
+            let (_, y) = plate(font, 340.0, menu_height(menu) + 70.0);
+            text_centered(font, "Flee the duel? This ends it.", cx, y + 30.0, 15, TEXT);
+            draw_menu(font, menu, cx, y + 46.0);
+        }
+    }
+}
+
+/// Shown instead of the game when the window is too small to lay out.
+pub fn draw_too_small(font: &Font) {
+    let (sw, sh) = (screen_width(), screen_height());
+    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.02, 0.02, 0.05, 1.0));
+    text_centered(font, "Make the window larger", sw * 0.5, sh * 0.5, 14, TEXT);
+}
+
 
 #[allow(clippy::too_many_arguments)]
 fn bar(font: &Font, x: f32, y: f32, w: f32, label: &str, frac: f32, text: &str, color: Vec3) {
@@ -287,7 +421,8 @@ pub fn draw_panels(font: &Font, views: [PanelView; 2]) {
         let head = fit(&format!("{}  ·  {}", f.name, f.class.name()), chars_in(font, inner, 15));
         draw_text_ex(&head, pad, y + 20.0, tp(font, 15, TEXT));
         let bw = inner;
-        bar(font, pad, y + 32.0, bw, "HP", fill(v.bars[0], f.max_health), &format!("{}/{}", f.health, f.max_health), HEALTH);
+        let hp = fill(v.bars[0], f.max_health);
+        bar(font, pad, y + 32.0, bw, "HP", hp, &format!("{}/{}", f.health, f.max_health), hp_color(hp, get_time() as f32));
         // Stamina has no cap: the bar fills at 100 and the number shows the real value.
         bar(font, pad, y + 48.0, bw, "ST", stamina_fill(v.bars[1]), &f.stamina.to_string(), STAMINA);
         let (third, potions) = match f.class {
@@ -299,7 +434,11 @@ pub fn draw_panels(font: &Font, views: [PanelView; 2]) {
                 bar(font, pad, y + 64.0, bw, "MP", fill(v.bars[2], f.max_mana), &format!("{}/{}", f.mana, f.max_mana), MANA);
                 (None, format!("Potions {}  Mana potions {}", f.health_potions, f.mana_potions))
             }
-            Class::Assassin => (Some(format!("Crit x{:.1}", f.crit)), format!("Potions {}", f.health_potions)),
+            Class::Assassin => {
+                // No class bar: the crit multiplier fills that row instead.
+                draw_text_ex(format!("CR  Crit x{:.1}", f.crit), pad, y + 74.0, tp(font, 13, DIM));
+                (None, format!("Potions {}", f.health_potions))
+            }
         };
         let line = match third {
             Some(t) => format!("{potions}  ·  {t}"),
@@ -443,5 +582,43 @@ mod tests {
         assert_eq!(wrap("abcdefgh", 3), vec!["abc", "def", "gh"]);
         assert!(wrap("", 5).is_empty());
         assert!(wrap("one two three four five", 9).iter().all(|l| l.chars().count() <= 9));
+    }
+
+    #[test]
+    fn move_cost_strings() {
+        use crate::rules::Move::*;
+        let w = Fighter::new("W", Class::Warrior);
+        let a = Fighter::new("A", Class::Assassin);
+        let s = Fighter::new("S", Class::Sorcerer);
+        assert_eq!(move_cost(&w, Attack), "10 ST · 10 dmg");
+        assert_eq!(move_cost(&w, RaiseShield), "15 ST · +25 shield");
+        assert_eq!(move_cost(&a, CritAttack), "20 ST · 15 dmg");
+        assert_eq!(move_cost(&s, FireOrb), "10 MP 10 ST · 12 dmg");
+        assert_eq!(move_cost(&w, HealthPotion), "+50 HP · 2 left");
+        assert_eq!(move_cost(&s, ManaPotion), "+50 MP · 3 left");
+        assert_eq!(move_cost(&w, Rest), "+10 HP +25 ST");
+        assert_eq!(move_cost(&s, Rest), "+10 HP +25 ST +20 MP");
+        assert_eq!(move_cost(&a, Flee), "ends the duel");
+    }
+
+    #[test]
+    fn hp_color_thresholds() {
+        let g = hp_color(0.8, 0.0);
+        let y = hp_color(0.4, 0.0);
+        let r = hp_color(0.2, 0.0);
+        assert!(g.y > g.x && g.y > g.z, "green");
+        assert!(y.x > 0.8 && y.y > 0.5 && y.z < 0.5, "gold");
+        assert!(r.x > r.y && r.x > r.z, "red");
+        assert_ne!(hp_color(0.1, 0.0), hp_color(0.1, 0.25), "pulses when nearly dead");
+        assert_eq!(hp_color(0.2, 0.0), hp_color(0.2, 0.25), "no pulse above 15%");
+    }
+
+    #[test]
+    fn menu_flash_decays() {
+        let mut m = menu(&[true, false]);
+        m.flash_row(1);
+        assert!(m.flash > 0.0 && m.flash_row == 1);
+        m.tick(0.5);
+        assert_eq!(m.flash, 0.0);
     }
 }
