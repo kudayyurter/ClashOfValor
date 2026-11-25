@@ -13,6 +13,7 @@
 
 mod anim;
 mod ascii;
+mod bot;
 mod effects;
 mod flow;
 mod models;
