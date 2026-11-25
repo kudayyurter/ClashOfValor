@@ -124,6 +124,15 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     }
     let nearest = ts[..n].iter().copied().fold(MAX_DIST, f32::min);
     let frac = best_c as f32 / n as f32;
+    if best_id == SKY && nearest >= MAX_DIST && matches!(pass, Pass::Coarse) {
+        // Nothing here but sky: hills, the moon, or a star.
+        if let Some((glyph, rgb)) = sky_glyph(cam.ray(x0 + cw * 0.5, y0 + ch * 0.5), scene.time) {
+            if glyph == ' ' {
+                return CellOut::Empty(MAX_DIST);
+            }
+            return CellOut::Glyph(Cell { glyph, color: to_color(rgb), depth: MAX_DIST, glow: 0.0 });
+        }
+    }
     if best_id == SKY || frac < 0.2 {
         return CellOut::Empty(nearest);
     }
@@ -181,6 +190,66 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     };
     let fade = 1.0 - body.map_or(0.0, |b| b.dim);
     CellOut::Glyph(Cell { glyph, color: to_color(rgb * fade), depth: hit.t, glow: glow * fade })
+}
+
+/// Where the decorative moon hangs: behind the fighters, between the status panels.
+pub const MOON: Vec3 = Vec3::new(0.119, 0.069, -0.990);
+
+/// Glyph for a ray that hits nothing: hills on the horizon, the moon, or stars.
+/// `None` leaves the cell empty.
+pub fn sky_glyph(dir: Vec3, time: f32) -> Option<(char, Vec3)> {
+    let el = dir.y.clamp(-1.0, 1.0).asin();
+    let az = dir.z.atan2(dir.x);
+    // Horizon ridge, in radians of elevation. The camera only sees about 0.14 rad of
+    // sky, so the hills stay low.
+    let ridge = |a: f32| 0.016 + 0.01 * ((a * 7.0).sin() + 0.6 * (a * 17.0 + 1.3).sin() + 0.3 * (a * 41.0).sin()) / 1.9;
+    let r = ridge(az);
+    if el < r {
+        let col = (az * 400.0).floor() as i32;
+        if el > r - 0.007 {
+            // A ragged treeline along the crest.
+            let h = hash2(col, 17);
+            if h > 0.4 {
+                return Some((if h > 0.8 { 'A' } else { '^' }, vec3(0.05, 0.13, 0.1)));
+            }
+        }
+        if el > r - 0.004 {
+            let slope = (ridge(az + 0.003) - ridge(az - 0.003)) / 0.006;
+            let g = if slope > 0.15 {
+                '\\'
+            } else if slope < -0.15 {
+                '/'
+            } else {
+                '_'
+            };
+            return Some((g, vec3(0.1, 0.12, 0.2)));
+        }
+        // Sparse texture on the hillside; mostly a dark silhouette against the stars.
+        let h = hash2(col, (el * 400.0).floor() as i32);
+        return Some((if h > 0.88 { '.' } else { ' ' }, vec3(0.07, 0.08, 0.14)));
+    }
+    let a = dir.angle_between(MOON.normalize());
+    if a < 0.035 {
+        let g = if a < 0.017 { '●' } else if a < 0.028 { 'O' } else { 'o' };
+        return Some((g, vec3(0.95, 0.95, 0.82)));
+    }
+    if a < 0.08 {
+        let h = hash2((az * 300.0).floor() as i32, (el * 300.0).floor() as i32 + 5);
+        return (h > 0.55).then_some(('.', vec3(0.5, 0.52, 0.5) * (1.0 - (a - 0.035) / 0.045)));
+    }
+    if el < r + 0.012 {
+        return None;
+    }
+    // Stars: a sparse hash on the world direction, so they hold still as the camera turns.
+    let (ci, cj) = ((az / 0.012).floor() as i32, (el / 0.012).floor() as i32);
+    let h = hash2(ci + 31, cj - 77);
+    if h < 0.98 {
+        return None;
+    }
+    let k = hash2(ci, cj);
+    let g = if k > 0.85 { '+' } else if k > 0.55 { '*' } else { '.' };
+    let tw = 0.55 + 0.45 * (time * (1.5 + 2.0 * k) + h * 60.0).sin();
+    Some((g, vec3(0.75, 0.8, 1.0) * tw))
 }
 
 /// Hit flash: lerp a glyph colour toward white.
@@ -521,5 +590,37 @@ mod tests {
         assert_eq!(flash_rgb(v, 0.0), v);
         let w = flash_rgb(v, 1.0);
         assert!(w.min_element() >= 1.0);
+    }
+
+    #[test]
+    fn moon_where_expected() {
+        let (g, _) = sky_glyph(MOON.normalize(), 0.0).expect("moon");
+        assert!(matches!(g, '●' | 'O' | 'o'), "{g}");
+    }
+
+    #[test]
+    fn hills_below_ridge() {
+        let (_, rgb) = sky_glyph(vec3(0.0, 0.002, -1.0).normalize(), 0.0).expect("hill");
+        assert!(rgb.max_element() < 0.25, "dark silhouette: {rgb}");
+    }
+
+    #[test]
+    fn stars_stable_and_sparse() {
+        let mut lit = 0;
+        let mut total = 0;
+        for i in 0..200 {
+            for j in 0..100 {
+                let az = i as f32 / 200.0 * std::f32::consts::TAU;
+                let el = 0.2 + j as f32 / 100.0;
+                let d = vec3(el.cos() * az.cos(), el.sin(), el.cos() * az.sin());
+                let a = sky_glyph(d, 0.0);
+                let b = sky_glyph(d, 5.0);
+                assert_eq!(a.map(|x| x.0), b.map(|x| x.0), "same star glyph over time");
+                total += 1;
+                lit += a.is_some() as u32;
+            }
+        }
+        let f = lit as f32 / total as f32;
+        assert!((0.005..0.05).contains(&f), "star fraction {f}");
     }
 }
