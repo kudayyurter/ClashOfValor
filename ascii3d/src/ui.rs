@@ -22,12 +22,23 @@ pub struct Menu {
     pub notes: Vec<String>,
     pub enabled: Vec<bool>,
     pub sel: usize,
+    /// Seconds left on a "can't pick that" flash, and which row.
+    pub flash: f32,
+    pub flash_row: usize,
 }
 
 impl Menu {
     pub fn new(items: Vec<String>, notes: Vec<String>, enabled: Vec<bool>) -> Menu {
         let sel = enabled.iter().position(|&e| e).unwrap_or(0);
-        Menu { items, notes, enabled, sel }
+        Menu { items, notes, enabled, sel, flash: 0.0, flash_row: 0 }
+    }
+
+    /// Flash a row (a dimmed row the player tried to pick).
+    pub fn flash_row(&mut self, i: usize) {
+        if i < self.items.len() {
+            self.flash = 0.4;
+            self.flash_row = i;
+        }
     }
 
     /// A menu whose items are all enabled and have no notes.

@@ -24,7 +24,7 @@ mod ui;
 use ascii::{Cam, CellOut, FineGovernor, Opts, Pass, sample_cell};
 use macroquad::prelude::*;
 use rayon::prelude::*;
-use flow::{Flow, Input, Screen};
+use flow::{Flow, Input, Screen, SetupStage};
 use rules::Class;
 use effects::{Fx, Kind, Shake};
 use scene::{ACCENTS, FX_ID, METALS, Mat, Part, Scene, Shape};
@@ -255,6 +255,11 @@ async fn main() {
         Some(classes) => Flow::with_duel(["Player 1", "Player 2"], classes),
         None => Flow::new(),
     };
+    // Screenshots keep the bot's dice fixed; play gets a fresh seed each launch.
+    if args.shot.is_none() {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
+        flow.rng = bot::Rng::new(seed);
+    }
     let mut world = World { scene: Scene::new(), fx: Fx::default(), shake: Shake::default(), staged: flow.preview().0 };
     world.scene.set_fighters(world.staged);
     for b in &mut world.scene.bodies {
@@ -275,6 +280,10 @@ async fn main() {
             std::process::exit(1);
         }
         flow.step(&[Input::Digit(m)]);
+        // Scripted Flee skips its confirm.
+        if matches!(flow.popup, Some(flow::Popup::ConfirmFlee { .. })) {
+            flow.step(&[Input::Digit(2)]);
+        }
         let last = n + 1 == args.moves.len();
         match (last, args.at, &flow.screen) {
             (true, Some(at), Screen::Animate { action, .. }) => {
@@ -537,16 +546,27 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
         ui::draw_panels(font, views);
     }
     match &flow.screen {
-        Screen::Setup { who, naming, field, menu, .. } => {
+        Screen::Setup { stage, who, field, menu, .. } => {
             let accent = ACCENTS[*who];
             let y = sh * 0.6;
-            if *naming {
-                let title = format!("Player {}, enter your name", who + 1);
-                ui::draw_name_prompt(font, &title, field, accent, y, (frame / 30).is_multiple_of(2));
-            } else {
-                let title = format!("{}, choose your class", flow.names()[*who]);
-                ui::text_centered(font, &title, cx, y, ui::FONT, ui::rgb(accent));
-                ui::draw_menu(font, menu, cx, y + 14.0);
+            match stage {
+                SetupStage::Name => {
+                    let title = format!("Player {}, enter your name", who + 1);
+                    ui::draw_name_prompt(font, &title, field, accent, y, (frame / 30).is_multiple_of(2));
+                }
+                SetupStage::Mode => {
+                    ui::text_centered(font, "Choose a mode", cx, y, ui::FONT, ui::TEXT);
+                    ui::draw_menu(font, menu, cx, y + 14.0);
+                }
+                SetupStage::Class => {
+                    let title = if flow.mode == flow::Mode::Bot && *who == 1 {
+                        "Choose the bot's class".to_string()
+                    } else {
+                        format!("{}, choose your class", flow.names()[*who])
+                    };
+                    ui::text_centered(font, &title, cx, y, ui::FONT, ui::rgb(accent));
+                    ui::draw_menu(font, menu, cx, y + 14.0);
+                }
             }
         }
         Screen::Choose { menu } => {
@@ -562,7 +582,7 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
             ui::draw_caption(font, &flow.caption, top - 10.0);
             ui::draw_menu(font, menu, cx, top);
             if let Some((text, who)) = flow.banner() {
-                ui::draw_banner(font, &text, scene.bodies[who].accent);
+                ui::draw_banner(font, &text, who.map_or(Vec3::splat(0.75), |w| scene.bodies[w].accent));
             }
         }
     }
