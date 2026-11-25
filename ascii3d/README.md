@@ -11,35 +11,39 @@ Unlike the terminal game, this opens its own window (macroquad). The font is Jet
 
 ## The duel
 
-Two players share one keyboard and take turns, like the terminal game's Player vs Player mode.
+A turn-based duel for two players on one keyboard, or one player against the bot.
 
-1. Each player types a name and picks a class. The class previews in 3D as you browse the list.
+1. Pick a mode: Player vs Player or Player vs Bot.
+2. Each player types a name and picks a class; the class previews in 3D as you browse. Against the bot, you also pick the bot's class (or Random).
    - **Warrior:** a knight with sword and shield. The shield absorbs damage before health.
    - **Assassin:** a hooded fighter with twin daggers and a critical strike.
    - **Sorcerer:** a robed caster whose staff hurls fire orbs.
-2. On your turn, pick a move. Moves you can't afford are dimmed, with the reason shown. Every move plays out in 3D with its own effect: slash trails, sparks, the flying fire orb and its explosion, the shield rim, the crit vanish, potion sparkles and floating numbers.
-3. After a knockout or a flee, choose Rematch, New duel or Quit.
+3. On your turn, pick a move. The menu header says whose move it is and the turn number. Each move shows its cost and effect, and moves you can't afford are dimmed with the reason. Every move plays out in 3D: slash arcs, sparks, the flying fire orb, the shield rim, the crit vanish, potion sparkles and floating numbers. The last four moves are listed under the left panel.
+4. Each fighter gets 40 turns. If nobody is knocked out by then, the higher health percentage wins; equal is a draw.
+5. After the duel: Rematch (the other player moves first), New duel (names are kept) or Quit. The result shows the running score and duel stats.
 
-The rules, costs and narration are copied from the C++ game (`src/rules.rs`).
+The rules and narration come from the C++ game (`src/rules.rs`), with two changes: the fire orb deals 12, and the turn limit above. The bot uses the C++ bot's heuristics (`src/bot.rs`).
 
 Controls:
 - Arrow keys move the highlight, Enter confirms, and number keys pick a menu option directly.
 - Space or Enter skips the move animation.
-- M/N change the armour metal on a Warrior's turn.
-- E toggles outlines, F toggles the fine fighter grid, G cycles the glyph size, L toggles chainmail or plate legs.
-- Right-mouse drag orbits the camera. The camera always stays at the same distance; there is no zoom.
-- Esc quits.
+- Esc pauses (Resume, How to play, animation speed, New duel, Quit). During setup Esc steps back. No single key quits the game.
+- Flee asks for confirmation.
+- M/N change the armour metal of the Warrior whose turn it is (or who is choosing).
+- Right-mouse drag orbits the camera. The camera always stays at the same distance; there is no zoom. Between turns it sways gently.
+- F3 shows the developer readout (fps, raymarch time, grid). E toggles outlines, F the fine fighter grid, G the glyph size, L chainmail or plate legs.
 
-When frames get slow, only the fighter whose turn it is draws on the fine grid. The top bar shows `fine both`, `fine active` or `fine off`.
+When frames get slow, only the fighter whose turn it is draws on the fine grid. The readout shows `fine both`, `fine active` or `fine off`. Below 640x400 the game asks for a larger window.
 
 ## Screenshots
 
 `--shot out.png` renders one frame to a PNG and exits. Options:
 
 - `--duel warrior,sorcerer` skips setup.
-- `--moves 1,2` plays those menu choices in turn order first. An unavailable move prints `move N unavailable` and exits with status 1.
+- `--moves 1,2` plays those menu choices in turn order first (Flee is auto-confirmed). An unavailable move prints `move N unavailable` and exits with status 1.
 - `--at 0.6` freezes the last scripted move at that point of its animation.
-- `--keys "Ann|2Bo|3"` types scripted keys, one per frame: `|` is Enter, `<` and `>` are Up and Down, `#` is Backspace.
+- `--ff 39` pretends both fighters already used 39 turns, to reach the turn limit quickly.
+- `--keys "1Ann|2Bo|3"` types scripted keys, one per frame: `|` is Enter, `<` and `>` are Up and Down, `#` is Backspace, `~` is Esc.
 - `--size 800x500` sets the window size.
 - `--yaw deg` and `--dist d` set the camera, `--metal i` sets the armour metal, and `--noedges` turns outlines off.
 

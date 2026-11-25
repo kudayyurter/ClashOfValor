@@ -105,6 +105,30 @@ pub fn shake_strength(res: &crate::rules::Resolution) -> Option<f32> {
         .reduce(f32::max)
 }
 
+/// A slow idle drift of the camera's yaw between turns. Only the angle changes, never
+/// the distance.
+#[derive(Default)]
+pub struct Sway {
+    pub t: f32,
+}
+
+impl Sway {
+    /// Peak yaw offset (radians).
+    pub const AMP: f32 = 4.0 * std::f32::consts::PI / 180.0;
+    /// Seconds per full sway.
+    pub const PERIOD: f32 = 20.0;
+
+    pub fn update(&mut self, dt: f32, active: bool) {
+        if active {
+            self.t += dt;
+        }
+    }
+
+    pub fn yaw_offset(&self) -> f32 {
+        Self::AMP * (std::f32::consts::TAU * self.t / Self::PERIOD).sin()
+    }
+}
+
 /// Move eye and target together.
 pub fn shaken(eye: Vec3, target: Vec3, o: Vec3) -> (Vec3, Vec3) {
     (eye + o, target + o)
@@ -235,6 +259,10 @@ impl Fx {
                 if window(p0, p1, 0.1, 0.35) && rnd(0.0, 1.0) < 0.6 {
                     self.burst(world(me, me.anchors.chest), 2, Kind::Smoke, vec3(0.45, 0.45, 0.55));
                 }
+                if p0 < 0.36 && p1 >= 0.36 {
+                    // An afterimage left where the assassin vanished.
+                    self.burst(world(me, me.anchors.chest), 12, Kind::Smoke, me.accent * 0.8);
+                }
                 if p0 < 0.42 && p1 >= 0.42 {
                     self.burst(world(me, me.anchors.chest), 12, Kind::Smoke, vec3(0.4, 0.4, 0.5));
                 }
@@ -291,6 +319,10 @@ impl Fx {
                     if absorbed > 0 {
                         self.text(above(b) + vec3(0.0, if damage > 0 { 0.25 } else { 0.0 }, 0.0), format!("-{absorbed} shield"), BLUE, 1.0);
                         self.ward_flash[target] = 1.0;
+                        if crit && damage == 0 {
+                            // A crit the shield ate still deserves its label.
+                            self.text(above(b) + vec3(0.0, 0.28, 0.0), "CRIT".into(), RED, 1.0);
+                        }
                     }
                 }
                 Event::Healed { who, hp } => {
@@ -309,11 +341,12 @@ impl Fx {
                 }
                 Event::Rested { who, hp, stamina, mana } => {
                     self.burst(feet(&bodies[who]), 16, Kind::Mote, GOLD);
-                    let mut s = format!("+{hp} HP +{stamina} ST");
-                    if mana > 0 {
-                        s += &format!(" +{mana} MP");
-                    }
-                    self.text(above(&bodies[who]), s, GOLD, 1.0);
+                    let s: Vec<String> = [(hp, "HP"), (stamina, "ST"), (mana, "MP")]
+                        .iter()
+                        .filter(|(v, _)| *v > 0)
+                        .map(|(v, u)| format!("+{v} {u}"))
+                        .collect();
+                    self.text(above(&bodies[who]), s.join(" "), GOLD, 1.0);
                 }
                 Event::Fled { who } => self.burst(world(&bodies[who], bodies[who].anchors.chest), 20, Kind::Smoke, vec3(0.5, 0.5, 0.58)),
                 Event::Defeated { .. } => {}
@@ -355,7 +388,7 @@ fn glyph(font: &Font, c: char, x: f32, y: f32, size: u16, color: Color) {
 
 /// Draw particles, floating text and shield rims. `depth_at(x, y)` is the scene depth at a
 /// screen point.
-pub fn draw(fx: &Fx, cam: &Cam, depth_at: &dyn Fn(f32, f32) -> f32, font: &Font, fs: u16, chests: [Vec3; 2]) {
+pub fn draw(fx: &Fx, cam: &Cam, depth_at: &dyn Fn(f32, f32) -> f32, font: &Font, fs: u16, chests: [Vec3; 2], dims: [f32; 2]) {
     let visible = |sp: Vec2, depth: f32| depth <= depth_at(sp.x, sp.y) + 0.2;
     // Shield rims: a ring of glyphs facing the camera around each warded fighter.
     for i in 0..2 {
@@ -363,19 +396,27 @@ pub fn draw(fx: &Fx, cam: &Cam, depth_at: &dyn Fn(f32, f32) -> f32, font: &Font,
             continue;
         }
         let bright = (0.5 + 0.7 * fx.ward_flash[i]).min(1.2);
-        for k in 0..24 {
-            let a = k as f32 / 24.0 * std::f32::consts::TAU;
+        let fade = 1.0 - dims[i];
+        if fade <= 0.01 {
+            continue;
+        }
+        for k in 0..40 {
+            let a = k as f32 / 40.0 * std::f32::consts::TAU;
             let p = chests[i] + (cam.right * a.cos() * 0.7 + cam.up * a.sin() * 0.85) * fx.ward[i];
             let Some((sp, depth)) = cam.project(p) else { continue };
             if !visible(sp, depth) {
                 continue;
             }
             // Tangent of the ring on screen picks the glyph.
-            let g = line_glyph(-a.sin(), -a.cos());
+            let g = match line_glyph(-a.sin(), -a.cos()) {
+                // Solid half blocks on the sides read as a shield edge.
+                '|' => if a.cos() > 0.0 { '▐' } else { '▌' },
+                g => g,
+            };
             let c = BLUE * bright;
             let size = ((fs as f32) * 4.5 / depth).clamp(8.0, 22.0) as u16;
-            draw_circle(sp.x, sp.y, size as f32 * 0.6, Color::new(0.3, 0.5, 1.0, 0.05 * bright));
-            glyph(font, g, sp.x - size as f32 * 0.3, sp.y + size as f32 * 0.35, size, Color::new(c.x, c.y, c.z, 0.5 + 0.5 * bright.min(1.0)));
+            draw_circle(sp.x, sp.y, size as f32 * 0.6, Color::new(0.3, 0.5, 1.0, 0.05 * bright * fade));
+            glyph(font, g, sp.x - size as f32 * 0.3, sp.y + size as f32 * 0.35, size, Color::new(c.x, c.y, c.z, (0.5 + 0.5 * bright.min(1.0)) * fade));
         }
     }
     for p in &fx.particles {
@@ -496,7 +537,7 @@ mod tests {
         fx.on_action(&action(Move::Rest, vec![Event::Rested { who: 0, hp: 5, stamina: 25, mana: 20 }]), &s.bodies, 0.016, true);
         assert!(fx.texts.iter().any(|t| t.text == "+5 HP +25 ST +20 MP"));
         fx.on_action(&action(Move::Rest, vec![Event::Rested { who: 0, hp: 0, stamina: 25, mana: 0 }]), &s.bodies, 0.016, true);
-        assert!(fx.texts.iter().any(|t| t.text == "+0 HP +25 ST"));
+        assert!(fx.texts.iter().any(|t| t.text == "+25 ST"), "zero terms omitted");
     }
 
     #[test]
@@ -626,5 +667,38 @@ mod tests {
         fx.on_action(&a, &s.bodies, 0.016, false);
         let added = fx.particles.iter().filter(|p| p.kind == Kind::Trail).count() - before;
         assert!(added >= 3, "{added} trail glyphs in one frame");
+    }
+
+    #[test]
+    fn sway_bounded_and_keeps_distance() {
+        let mut s = Sway::default();
+        let target = vec3(0.0, 1.25, 0.0);
+        for _ in 0..200 {
+            s.update(0.1, true);
+            let y = s.yaw_offset();
+            assert!(y.abs() <= Sway::AMP + 1e-5);
+            let eye = target + vec3(0.16f32.cos() * y.sin(), 0.16f32.sin(), 0.16f32.cos() * y.cos()) * 5.4;
+            assert!(((eye - target).length() - 5.4).abs() < 1e-4);
+        }
+        assert!(s.yaw_offset().abs() > 0.0);
+    }
+
+    #[test]
+    fn sway_pauses_when_inactive() {
+        let mut s = Sway::default();
+        s.update(1.0, true);
+        let y = s.yaw_offset();
+        s.update(5.0, false);
+        assert_eq!(s.yaw_offset(), y);
+    }
+
+    #[test]
+    fn absorbed_crit_shows_tag() {
+        let s = scene();
+        let mut fx = Fx::default();
+        let a = action(Move::CritAttack, vec![Event::Hit { target: 1, absorbed: 15, damage: 0, crit: true }]);
+        fx.on_action(&a, &s.bodies, 0.016, true);
+        assert!(fx.texts.iter().any(|t| t.text == "-15 shield"));
+        assert!(fx.texts.iter().any(|t| t.text == "CRIT"));
     }
 }

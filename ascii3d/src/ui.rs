@@ -117,7 +117,7 @@ pub const FONT: u16 = 16;
 pub const ROW: f32 = 22.0;
 pub const DIM: Color = Color::new(0.55, 0.57, 0.65, 1.0);
 pub const TEXT: Color = Color::new(0.9, 0.9, 0.95, 1.0);
-const PANEL_BG: Color = Color::new(0.0, 0.0, 0.0, 0.72);
+const PANEL_BG: Color = Color::new(0.0, 0.0, 0.0, 0.9);
 
 pub fn rgb(v: Vec3) -> Color {
     Color::new(v.x, v.y, v.z, 1.0)

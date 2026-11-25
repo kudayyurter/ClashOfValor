@@ -26,7 +26,7 @@ use macroquad::prelude::*;
 use rayon::prelude::*;
 use flow::{Flow, Input, Screen, SetupStage};
 use rules::Class;
-use effects::{Fx, Kind, Shake};
+use effects::{Fx, Kind, Shake, Sway};
 use scene::{ACCENTS, FX_ID, METALS, Mat, Part, Scene, Shape};
 
 const BG: Color = Color::new(0.035, 0.035, 0.07, 1.0);
@@ -109,6 +109,7 @@ struct World {
     scene: Scene,
     fx: Fx,
     shake: Shake,
+    sway: Sway,
     staged: [Class; 2],
 }
 
@@ -273,7 +274,7 @@ async fn main() {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
         flow.rng = bot::Rng::new(seed);
     }
-    let mut world = World { scene: Scene::new(), fx: Fx::default(), shake: Shake::default(), staged: flow.preview().0 };
+    let mut world = World { scene: Scene::new(), fx: Fx::default(), shake: Shake::default(), sway: Sway::default(), staged: flow.preview().0 };
     world.scene.set_fighters(world.staged);
     for b in &mut world.scene.bodies {
         b.metal = args.metal % METALS.len();
@@ -402,7 +403,14 @@ async fn main() {
 
         // ---- camera and grid ---------------------------------------------------
         let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.25, 0.0);
-        let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
+        // Idle sway between turns (menus waiting, no pop-up, not orbiting): yaw only.
+        let idle = matches!(flow.screen, Screen::Choose { .. } | Screen::Result { .. })
+            && flow.popup.is_none()
+            && !is_mouse_button_down(MouseButton::Right)
+            && args.shot.is_none();
+        world.sway.update(dt, idle);
+        let yaw = cam_yaw + world.sway.yaw_offset();
+        let eye = target + vec3(cam_pitch.cos() * yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * yaw.cos()) * cam_dist;
         let fwd = (target - eye).normalize();
         let right = fwd.cross(Vec3::Y).normalize();
         let (eye, target) = effects::shaken(eye, target, world.shake.offset_in(right, right.cross(fwd)));
@@ -502,7 +510,7 @@ async fn main() {
             }
         };
         let chests = [0, 1].map(|i| scene.bodies[i].to_world(scene.bodies[i].anchors.chest));
-        effects::draw(&world.fx, &cam, &depth_at, &font, fs, chests);
+        effects::draw(&world.fx, &cam, &depth_at, &font, fs, chests, [scene.bodies[0].dim, scene.bodies[1].dim]);
 
         // Name tag over each fighter, in their accent colour; a marker over the active one.
         let names = flow.names();

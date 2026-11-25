@@ -274,10 +274,14 @@ impl Flow {
                 dims[a] = anim::actor_dim(action.res.mv, p);
                 if let Some(End::Won { winner }) = end {
                     poses[1 - winner] = anim::add(poses[1 - winner], anim::collapse_pose(*collapse));
+                    dims[1 - winner] = 0.4 * collapse;
                 }
             }
             Screen::Result { .. } => match end {
-                Some(End::Won { winner }) => poses[1 - winner] = anim::collapse_pose(1.0),
+                Some(End::Won { winner }) => {
+                    poses[1 - winner] = anim::collapse_pose(1.0);
+                    dims[1 - winner] = 0.4;
+                }
                 Some(End::Fled { who }) => dims[who] = 1.0,
                 Some(End::TimeUp { .. }) | None => {}
             },
@@ -1284,5 +1288,19 @@ mod tests {
         assert_eq!(f.since_impact, t0, "target's flinch waits out the hit-stop");
         f.update(0.2);
         assert!(f.since_impact > t0);
+    }
+
+    #[test]
+    fn ko_dims_loser() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
+        f.duel.as_mut().unwrap().f[1].health = 10;
+        frames(&mut f, &[Digit(1), Space]);
+        f.update(0.016);
+        f.update(0.5);
+        let d = f.body_state(0.0, 3.8).1[1];
+        assert!(d > 0.1 && d < 0.4, "dimming as they fall: {d}");
+        settle(&mut f);
+        assert_eq!(f.body_state(0.0, 3.8).1[1], 0.4);
+        assert_eq!(f.body_state(0.0, 3.8).1[0], 0.0);
     }
 }
