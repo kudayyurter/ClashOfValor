@@ -696,4 +696,17 @@ mod tests {
         f.step(&[Enter]);
         assert_eq!(stage(&f), "choose 0");
     }
+
+    #[test]
+    fn knockout_with_hit_stop_reaches_result() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
+        f.duel.as_mut().unwrap().f[1].health = 10;
+        frames(&mut f, &[Digit(1)]);
+        let mut t = 0.0;
+        while stage(&f) != "result" && t < 3.0 {
+            f.update(1.0 / 60.0);
+            t += 1.0 / 60.0;
+        }
+        assert_eq!(stage(&f), "result", "after {t} s");
+    }
 }

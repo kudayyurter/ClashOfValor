@@ -25,7 +25,7 @@ use macroquad::prelude::*;
 use rayon::prelude::*;
 use flow::{Flow, Input, Screen};
 use rules::Class;
-use effects::{Fx, Kind};
+use effects::{Fx, Kind, Shake};
 use scene::{ACCENTS, FX_ID, METALS, Mat, Part, Scene, Shape};
 
 const BG: Color = Color::new(0.035, 0.035, 0.07, 1.0);
@@ -105,6 +105,7 @@ fn parse_args() -> Args {
 struct World {
     scene: Scene,
     fx: Fx,
+    shake: Shake,
     staged: [Class; 2],
 }
 
@@ -125,6 +126,23 @@ impl World {
                 self.scene.bodies[target].flash = flash;
             }
         }
+        // Jolt the camera on impact: harder for crits and fire orbs, softer when the
+        // shield takes it all.
+        if impact && let Some(res) = &flow.last {
+            for e in &res.events {
+                if let rules::Event::Hit { absorbed, damage, crit, .. } = *e {
+                    let k = if crit || res.mv == rules::Move::FireOrb {
+                        0.11
+                    } else if damage == 0 && absorbed > 0 {
+                        0.03
+                    } else {
+                        0.05
+                    };
+                    self.shake.kick(k);
+                }
+            }
+        }
+        self.shake.update(dt);
         if let Screen::Animate { action, .. } = &flow.screen {
             self.fx.on_action(action, &self.scene.bodies, dt, impact);
         } else {
@@ -247,7 +265,7 @@ async fn main() {
         Some(classes) => Flow::with_duel(["Player 1", "Player 2"], classes),
         None => Flow::new(),
     };
-    let mut world = World { scene: Scene::new(), fx: Fx::default(), staged: flow.preview().0 };
+    let mut world = World { scene: Scene::new(), fx: Fx::default(), shake: Shake::default(), staged: flow.preview().0 };
     world.scene.set_fighters(world.staged);
     for b in &mut world.scene.bodies {
         b.metal = args.metal % METALS.len();
@@ -361,6 +379,7 @@ async fn main() {
         // ---- camera and grid ---------------------------------------------------
         let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.45, 0.0);
         let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
+        let (eye, target) = effects::shaken(eye, target, world.shake.offset());
         let (sw, sh) = (screen_width(), screen_height());
         let cam = Cam::look_at(eye, target, 50.0, sw, sh);
 

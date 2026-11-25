@@ -4,14 +4,19 @@
 //! rules have already resolved the move; the numbers on screen change at the impact.
 
 use crate::models::Pose;
-use crate::rules::{Class, Move, Resolution};
+use crate::rules::{Class, Event, Move, Resolution};
 use macroquad::math::vec3;
+
+/// Seconds the action freezes at a hit's impact.
+pub const HIT_STOP: f32 = 0.08;
 
 pub struct Action {
     pub res: Resolution,
     pub t: f32,
     pub dur: f32,
     pub impact: f32,
+    /// Hit-stop time left; while above 0 the clock does not move.
+    pub hold: f32,
     impact_done: bool,
 }
 
@@ -31,17 +36,35 @@ pub fn timing(mv: Move) -> (f32, f32) {
 impl Action {
     pub fn new(res: Resolution) -> Action {
         let (dur, impact) = timing(res.mv);
-        Action { res, t: 0.0, dur, impact, impact_done: false }
+        Action { res, t: 0.0, dur, impact, hold: 0.0, impact_done: false }
     }
 
     /// True exactly on the call where `t` first reaches `impact`.
     pub fn advance(&mut self, dt: f32) -> bool {
+        let mut dt = dt;
+        if self.hold > 0.0 {
+            let used = dt.min(self.hold);
+            self.hold -= used;
+            dt -= used;
+        }
+        let before = self.t;
         self.t = (self.t + dt).min(self.dur);
+        let has_hit = self.res.events.iter().any(|e| matches!(e, Event::Hit { .. }));
+        if has_hit && !self.impact_done && before < self.impact && self.t >= self.impact {
+            // Freeze on the impact frame; any time left over is spent in the hold.
+            let over = self.t - self.impact;
+            self.t = self.impact;
+            self.hold = HIT_STOP;
+            let used = over.min(self.hold);
+            self.hold -= used;
+            self.t += over - used;
+        }
         self.fire()
     }
 
     /// Jump to the end. True if the impact had not fired yet.
     pub fn skip(&mut self) -> bool {
+        self.hold = 0.0;
         self.t = self.dur;
         self.fire()
     }
@@ -298,5 +321,48 @@ mod tests {
     fn idle_breathes_out_of_phase() {
         assert_ne!(idle_pose(1.0, 0).breath, idle_pose(1.0, 1).breath);
         assert!(idle_pose(1.0, 0).breath.abs() <= 1.0);
+    }
+
+    fn hit_action(mv: Move) -> Action {
+        use crate::rules::Event;
+        Action::new(Resolution { actor: 0, mv, events: vec![Event::Hit { target: 1, absorbed: 0, damage: 10, crit: false }], narration: Vec::new() })
+    }
+
+    #[test]
+    fn hit_stop_freezes_then_resumes() {
+        let mut a = hit_action(Attack);
+        assert!(a.advance(0.55), "impact on crossing");
+        assert_eq!(a.t, 0.55);
+        assert!(!a.advance(0.05));
+        assert_eq!(a.t, 0.55, "frozen during the hit-stop");
+        a.advance(0.05);
+        assert!((a.t - 0.57).abs() < 1e-4, "resumes after {HIT_STOP} s: t={}", a.t);
+        let mut frames = 0;
+        let mut b = hit_action(Attack);
+        while !b.done() {
+            b.advance(1.0 / 60.0);
+            frames += 1;
+        }
+        let expect = ((1.2 + HIT_STOP) * 60.0f32).round() as i32;
+        assert!((frames - expect).abs() <= 1, "{frames} frames vs {expect}");
+    }
+
+    #[test]
+    fn no_hit_stop_without_hit() {
+        let mut a = action(Rest);
+        for _ in 0..200 {
+            a.advance(1.0 / 60.0);
+            assert_eq!(a.hold, 0.0);
+        }
+    }
+
+    #[test]
+    fn skip_clears_hit_stop() {
+        let mut a = hit_action(Attack);
+        a.advance(0.56);
+        assert!(a.hold > 0.0);
+        assert!(!a.skip(), "impact already fired");
+        assert!(a.done());
+        assert_eq!(a.hold, 0.0);
     }
 }

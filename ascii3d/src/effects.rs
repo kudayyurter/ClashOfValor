@@ -53,6 +53,48 @@ pub struct FloatText {
     pub scale: f32,
 }
 
+/// A short camera jolt on impact. Offsets eye and target by the same vector, so the
+/// camera distance never changes.
+#[derive(Default)]
+pub struct Shake {
+    pub amp: f32,
+    peak: f32,
+    t: f32,
+}
+
+impl Shake {
+    /// How long a kick takes to die out.
+    const DECAY: f32 = 0.3;
+
+    pub fn kick(&mut self, strength: f32) {
+        if strength >= self.amp {
+            self.peak = strength;
+            self.amp = strength;
+            self.t = 0.0;
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.t += dt;
+        self.amp = (self.peak * (1.0 - self.t / Self::DECAY)).max(0.0);
+    }
+
+    pub fn offset(&self) -> Vec3 {
+        if self.amp <= 0.0 {
+            return Vec3::ZERO;
+        }
+        let t = self.t;
+        let v = vec3((t * 67.0).sin(), 0.8 * (t * 53.0 + 1.7).sin(), 0.3 * (t * 41.0 + 0.5).sin());
+        // |v| <= sqrt(1 + 0.64 + 0.09) < 1.32
+        v * (self.amp / 1.32)
+    }
+}
+
+/// Move eye and target together.
+pub fn shaken(eye: Vec3, target: Vec3, o: Vec3) -> (Vec3, Vec3) {
+    (eye + o, target + o)
+}
+
 #[derive(Default)]
 pub struct Fx {
     pub particles: Vec<Particle>,
@@ -209,8 +251,8 @@ impl Fx {
         self.orb = None;
         if a.res.mv == Move::FireOrb {
             let at = world(them, them.anchors.chest);
-            self.burst(at, 40, Kind::Ember, vec3(1.0, 0.55, 0.15));
-            self.burst(at, 12, Kind::Spark, vec3(1.0, 0.85, 0.5));
+            self.burst(at, 60, Kind::Ember, vec3(1.0, 0.55, 0.15));
+            self.burst(at, 16, Kind::Spark, vec3(1.0, 0.85, 0.5));
         }
         let feet = |b: &Body| b.to_world(vec3(0.0, 0.1, 0.0));
         let above = |b: &Body| b.to_world(b.anchors.head + vec3(0.0, 0.35, 0.0));
@@ -219,7 +261,8 @@ impl Fx {
                 Event::Hit { target, absorbed, damage, crit } => {
                     let b = &bodies[target];
                     let chest = world(b, b.anchors.chest);
-                    self.burst(chest, if crit { 30 } else { 14 }, Kind::Spark, if crit { RED } else { vec3(1.0, 0.9, 0.6) });
+                    self.burst(chest, if crit { 44 } else { 22 }, Kind::Spark, if crit { RED } else { vec3(1.0, 0.9, 0.6) });
+                    self.burst(chest, 10, Kind::Spark, vec3(1.2, 1.2, 1.2));
                     if damage > 0 {
                         let (s, scale) = if crit { (format!("CRIT {damage}"), 1.6) } else { (format!("-{damage}"), 1.0) };
                         self.text(above(b), s, RED, scale);
@@ -464,5 +507,33 @@ mod tests {
             fx.on_action(&a, &s.bodies, 0.03, false);
         }
         assert!(fx.particles.iter().any(|p| p.kind == Kind::Trail));
+    }
+
+    #[test]
+    fn shake_decays() {
+        let mut s = Shake::default();
+        s.kick(0.1);
+        for _ in 0..10 {
+            s.update(0.013);
+            assert!(s.offset().length() <= 0.1 + 1e-4);
+        }
+        s.update(0.35);
+        assert_eq!(s.amp, 0.0);
+        assert_eq!(s.offset(), Vec3::ZERO);
+        s.kick(0.05);
+        s.kick(0.03);
+        assert_eq!(s.amp, 0.05, "a weaker kick never shrinks a stronger one");
+    }
+
+    #[test]
+    fn shake_keeps_distance() {
+        let (eye, target) = (vec3(0.0, 2.0, 5.0), vec3(0.0, 1.0, 0.0));
+        let mut s = Shake::default();
+        s.kick(0.11);
+        for _ in 0..12 {
+            s.update(0.02);
+            let (e, t) = shaken(eye, target, s.offset());
+            assert!(((e - t).length() - (eye - target).length()).abs() < 1e-5);
+        }
     }
 }
