@@ -36,6 +36,7 @@ pub struct Anchors {
     pub weapon_tip: Vec3,
     pub hand_r: Vec3,
     pub chest: Vec3,
+    #[allow(dead_code)] // kept for future head-level effects
     pub head: Vec3,
     /// Staff crystal for the Sorcerer, the chest otherwise.
     pub focus: Vec3,
