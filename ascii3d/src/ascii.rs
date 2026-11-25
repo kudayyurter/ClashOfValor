@@ -291,8 +291,21 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
     let l = sh.lum;
     match hit.mat {
         Mat::Grass => grass_glyph(scene, cam, sh),
-        Mat::Stone => (ramp(&['.', ':', 'o', 'd', 'Q', 'B'], l * 1.8), sh.rgb),
-        Mat::Leaf => (ramp(&['.', ':', ';', 'd', 'U', 'Q'], l * 2.2), sh.rgb),
+        Mat::Stone => {
+            // Shading blocks with the odd crack, so rocks read as stone, not letters.
+            let h = hash2((sh.p.x * 6.0 + sh.p.z * 2.0).floor() as i32, (sh.p.y * 6.0).floor() as i32);
+            let g = if h > 0.89 && l > 0.08 {
+                ['/', '\\', '_'][((h - 0.89) * 27.0) as usize % 3]
+            } else {
+                ramp(&['.', ':', '-', '=', '#', '░'], l * 1.8)
+            };
+            (g, sh.rgb)
+        }
+        Mat::Leaf => {
+            let h = hash2((sh.p.x * 9.0).floor() as i32, (sh.p.y * 9.0 + sh.p.z * 5.0).floor() as i32);
+            let g = if h > 0.9 { if h > 0.95 { '"' } else { '\'' } } else { ramp(&['.', ',', ';', '*', '%', '&'], l * 2.2) };
+            (g, sh.rgb)
+        }
         Mat::Wood => (ramp(&['.', ':', ')', '|', ']'], l * 2.5), sh.rgb),
         Mat::Fire => {
             let h = hash2((sh.p.y * 9.0 + scene.time * 10.0) as i32, (sh.p.x * 9.0 + sh.p.z * 7.0) as i32);
