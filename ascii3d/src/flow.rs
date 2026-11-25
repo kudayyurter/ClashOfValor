@@ -171,7 +171,7 @@ impl Flow {
             Screen::Result { .. } => match end {
                 Some(End::Won { winner }) => poses[1 - winner] = anim::collapse_pose(1.0),
                 Some(End::Fled { who }) => dims[who] = 1.0,
-                None => {}
+                Some(End::TimeUp { .. }) | None => {}
             },
             _ => {}
         }
@@ -323,6 +323,7 @@ impl Flow {
         match d.end? {
             End::Won { winner } => Some((format!("{} wins!", d.f[winner].name), winner)),
             End::Fled { who } => Some((format!("{} fled the fight!", d.f[who].name), who)),
+            End::TimeUp { .. } => todo!(),
         }
     }
 }
@@ -514,7 +515,7 @@ mod tests {
         assert_eq!(stage(&f), "result");
         assert_eq!(f.banner(), Some(("A wins!".to_string(), 0)));
         frames(&mut f, &[Digit(1)]);
-        assert_eq!(stage(&f), "choose 0");
+        assert_eq!(stage(&f), "choose 1", "B starts the rematch");
         assert_eq!(f.shown.as_ref().unwrap()[1].health, 100);
     }
 
@@ -654,7 +655,7 @@ mod tests {
         frames(&mut f, &[Digit(1)]);
         assert_eq!(f.caption.len(), 1, "only the action line before impact");
         f.step(&[Space]);
-        assert_eq!(f.caption[1], "B's shield absorbs 14 damage (11/25 remaining).");
+        assert_eq!(f.caption[1], "B's shield absorbs 12 damage (13/25 remaining).");
     }
 
     #[test]

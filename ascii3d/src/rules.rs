@@ -8,7 +8,9 @@ const ATTACK_STAMINA: i32 = 10;
 const CRIT_STAMINA: i32 = 20;
 const SHIELD_STAMINA: i32 = 15;
 const SPELL_MANA: i32 = 10;
-const SPELL_BONUS: i32 = 4;
+const SPELL_BONUS: i32 = 2;
+/// Turns per fighter before the duel is decided on health.
+pub const TURN_LIMIT: i32 = 40;
 const SHIELD_PER_LEVEL: i32 = 25;
 const POTION_HEALTH: i32 = 50;
 const POTION_MANA: i32 = 50;
@@ -189,6 +191,8 @@ pub struct Resolution {
 pub enum End {
     Won { winner: usize },
     Fled { who: usize },
+    /// Both fighters used all their turns: higher health percentage wins, else a draw.
+    TimeUp { winner: Option<usize> },
 }
 
 #[derive(Clone)]
@@ -196,11 +200,22 @@ pub struct Duel {
     pub f: [Fighter; 2],
     pub turn: usize,
     pub end: Option<End>,
+    /// Who moves first this duel; flips on each rematch.
+    pub first: usize,
+    /// Turns taken by each fighter.
+    pub moves: [i32; 2],
+    /// Damage dealt by each fighter (health lost plus shield absorbed).
+    pub dealt: [i32; 2],
 }
 
 impl Duel {
     pub fn new(a: Fighter, b: Fighter) -> Duel {
-        Duel { f: [a, b], turn: 0, end: None }
+        Duel { f: [a, b], turn: 0, end: None, first: 0, moves: [0, 0], dealt: [0, 0] }
+    }
+
+    /// The active fighter's turn number, from 1.
+    pub fn turn_number(&self) -> i32 {
+        self.moves[self.turn] + 1
     }
 
     /// Play the active fighter's move. `None` (and no change) if the duel is over, the
@@ -224,6 +239,9 @@ impl Duel {
                     "{t}'s shield absorbs {absorbed} damage ({}/{} remaining).",
                     target.shield, target.max_shield
                 ));
+            }
+            if damage > 0 {
+                narration.push(format!("{t} takes {damage} damage ({}/{}).", target.health, target.max_health));
             }
         };
 
@@ -315,10 +333,32 @@ impl Duel {
             }
         }
 
+        self.moves[me] += 1;
+        for e in &events {
+            if let Event::Hit { absorbed, damage, .. } = *e {
+                self.dealt[me] += absorbed + damage;
+            }
+        }
         if !self.f[them].alive() {
             events.push(Event::Defeated { who: them });
             narration.push(format!("{t} has been defeated! {n} wins!"));
             self.end = Some(End::Won { winner: me });
+        }
+        if self.end.is_none() && self.moves.iter().all(|&m| m >= TURN_LIMIT) {
+            // Out of turns: decide on health percentage.
+            let pct = |f: &Fighter| f.health * 100 / f.max_health.max(1);
+            let (a, b) = (pct(&self.f[0]), pct(&self.f[1]));
+            let winner = match a.cmp(&b) {
+                std::cmp::Ordering::Greater => Some(0),
+                std::cmp::Ordering::Less => Some(1),
+                std::cmp::Ordering::Equal => None,
+            };
+            narration.push("The duel reaches its time limit.".to_string());
+            narration.push(match winner {
+                Some(w) => format!("{} wins on health!", self.f[w].name),
+                None => "It's a draw!".to_string(),
+            });
+            self.end = Some(End::TimeUp { winner });
         }
         if self.end.is_none() {
             self.turn = them;
@@ -331,9 +371,54 @@ impl Duel {
         for f in &mut self.f {
             *f = Fighter::new(&f.name, f.class);
         }
-        self.turn = 0;
+        self.first = 1 - self.first;
+        self.turn = self.first;
         self.end = None;
+        self.moves = [0, 0];
+        self.dealt = [0, 0];
     }
+}
+
+/// One-line summary of a move for the move log.
+pub fn log_line(res: &Resolution, duel: &Duel) -> String {
+    let a = &duel.f[res.actor].name;
+    let label = res.mv.label();
+    for e in &res.events {
+        let s = match *e {
+            Event::Hit { target, absorbed, damage, crit } => {
+                let t = &duel.f[target].name;
+                let mut s = if damage == 0 {
+                    format!("{a} · {label} → {t} blocked {absorbed}")
+                } else {
+                    let mut s = format!("{a} · {label} → {t} -{damage}");
+                    if absorbed > 0 {
+                        s += &format!(" ({absorbed} shield)");
+                    }
+                    s
+                };
+                if crit && damage > 0 {
+                    s += " CRIT";
+                }
+                s
+            }
+            Event::Healed { hp, .. } => format!("{a} · {label} +{hp} HP"),
+            Event::Mana { mp, .. } => format!("{a} · {label} +{mp} MP"),
+            Event::Shield { amount, .. } => format!("{a} · {label} +{amount} shield"),
+            Event::Rested { hp, stamina, mana, .. } => {
+                let mut s = format!("{a} · Rest");
+                for (v, unit) in [(hp, "HP"), (stamina, "ST"), (mana, "MP")] {
+                    if v > 0 {
+                        s += &format!(" +{v} {unit}");
+                    }
+                }
+                s
+            }
+            Event::Fled { .. } => format!("{a} fled"),
+            Event::Defeated { .. } => continue,
+        };
+        return s;
+    }
+    format!("{a} · {label}")
 }
 
 #[cfg(test)]
@@ -404,7 +489,7 @@ mod tests {
         let r = d.take_turn(CritAttack).unwrap();
         assert_eq!(r.events[0], Event::Hit { target: 1, absorbed: 0, damage: 15, crit: true });
         assert_eq!(d.f[1].health, 85);
-        assert_eq!(r.narration.len(), 1, "no absorb line when the shield is empty");
+        assert!(!r.narration.iter().any(|l| l.contains("absorbs")), "no absorb line when the shield is empty");
     }
 
     #[test]
@@ -423,7 +508,7 @@ mod tests {
     fn fire_orb_costs_mana_and_stamina() {
         let mut d = duel(Sorcerer, Assassin);
         let r = d.take_turn(FireOrb).unwrap();
-        assert_eq!((d.f[0].mana, d.f[0].stamina, d.f[1].health), (40, 90, 86));
+        assert_eq!((d.f[0].mana, d.f[0].stamina, d.f[1].health), (40, 90, 88));
         assert_eq!(r.narration[0], "A conjures a fiery orb of energy and hurls it, exploding on impact!");
         d.take_turn(Rest).unwrap();
         d.f[0].mana = 5;
@@ -567,8 +652,128 @@ mod tests {
         d.take_turn(FireOrb).unwrap();
         d.take_turn(Flee).unwrap();
         d.rematch();
-        assert_eq!((d.turn, d.end), (0, None));
+        assert_eq!((d.turn, d.end), (1, None), "the other fighter starts the rematch");
         assert_eq!((d.f[0].name.as_str(), d.f[0].class, d.f[0].shield, d.f[0].stamina), ("A", Warrior, 25, 100));
         assert_eq!((d.f[1].name.as_str(), d.f[1].class, d.f[1].health, d.f[1].mana), ("B", Sorcerer, 100, 50));
+    }
+
+    #[test]
+    fn fire_orb_deals_12() {
+        let mut d = duel(Sorcerer, Assassin);
+        let r = d.take_turn(FireOrb).unwrap();
+        assert_eq!(d.f[1].health, 88);
+        assert_eq!(r.events[0], Event::Hit { target: 1, absorbed: 0, damage: 12, crit: false });
+    }
+
+    #[test]
+    fn damage_line_after_health_loss() {
+        let mut d = duel(Warrior, Sorcerer);
+        let r = d.take_turn(Attack).unwrap();
+        assert!(r.narration.contains(&"B takes 10 damage (90/100).".to_string()), "{:?}", r.narration);
+        let mut d = duel(Sorcerer, Warrior);
+        let r = d.take_turn(FireOrb).unwrap();
+        assert!(!r.narration.iter().any(|l| l.contains("takes")), "fully absorbed: {:?}", r.narration);
+    }
+
+    fn rest_out(d: &mut Duel) -> Resolution {
+        let mut last = None;
+        while d.end.is_none() {
+            last = d.take_turn(Rest);
+        }
+        last.unwrap()
+    }
+
+    #[test]
+    fn time_up_winner_on_health_percent() {
+        let mut d = duel(Warrior, Assassin);
+        d.f[0].max_health = 1000;
+        d.f[0].health = 500;
+        d.f[1].max_health = 1000;
+        d.f[1].health = 600;
+        let r = rest_out(&mut d);
+        assert_eq!(d.moves, [TURN_LIMIT, TURN_LIMIT]);
+        assert_eq!(d.end, Some(End::TimeUp { winner: Some(1) }));
+        assert!(r.narration.contains(&"The duel reaches its time limit.".to_string()));
+        assert_eq!(r.narration.last().unwrap(), "B wins on health!");
+    }
+
+    #[test]
+    fn time_up_draw() {
+        let mut d = duel(Warrior, Assassin);
+        let r = rest_out(&mut d);
+        assert_eq!(d.end, Some(End::TimeUp { winner: None }));
+        assert_eq!(r.narration.last().unwrap(), "It's a draw!");
+    }
+
+    #[test]
+    fn knockout_on_last_move_wins() {
+        let mut d = duel(Assassin, Sorcerer);
+        d.moves = [TURN_LIMIT - 1, TURN_LIMIT - 1];
+        d.take_turn(Rest).unwrap();
+        d.f[0].health = 5;
+        d.f[0].max_health = 100;
+        d.take_turn(FireOrb).unwrap();
+        assert_eq!(d.end, Some(End::Won { winner: 1 }));
+    }
+
+    #[test]
+    fn turn_number_counts_the_active_fighter() {
+        let mut d = duel(Warrior, Sorcerer);
+        assert_eq!(d.turn_number(), 1);
+        d.take_turn(Rest).unwrap();
+        assert_eq!(d.turn_number(), 1);
+        d.take_turn(Rest).unwrap();
+        assert_eq!(d.turn_number(), 2);
+    }
+
+    #[test]
+    fn rematch_alternates_first() {
+        let mut d = duel(Warrior, Sorcerer);
+        d.take_turn(Attack).unwrap();
+        d.rematch();
+        assert_eq!((d.first, d.turn), (1, 1));
+        assert_eq!((d.moves, d.dealt), ([0, 0], [0, 0]));
+        d.rematch();
+        assert_eq!((d.first, d.turn), (0, 0));
+    }
+
+    #[test]
+    fn stats_track_moves_and_dealt() {
+        let mut d = duel(Sorcerer, Warrior);
+        d.take_turn(FireOrb).unwrap();
+        d.take_turn(Attack).unwrap();
+        assert_eq!(d.moves, [1, 1]);
+        assert_eq!(d.dealt, [12, 10]);
+    }
+
+    #[test]
+    fn log_lines() {
+        let mut d = duel(Warrior, Sorcerer);
+        let r = d.take_turn(Attack).unwrap();
+        assert_eq!(log_line(&r, &d), "A · Attack → B -10");
+        let r = d.take_turn(FireOrb).unwrap();
+        assert_eq!(log_line(&r, &d), "B · Cast fire orb → A blocked 12");
+        d.f[0].shield = 5;
+        let r = d.take_turn(Attack).unwrap();
+        let _ = r;
+        let mut a = duel(Assassin, Warrior);
+        a.f[1].shield = 5;
+        let r = a.take_turn(CritAttack).unwrap();
+        assert_eq!(log_line(&r, &a), "A · Crit Attack → B -10 (5 shield) CRIT");
+        let mut h = duel(Assassin, Sorcerer);
+        h.f[0].health = 60;
+        let r = h.take_turn(HealthPotion).unwrap();
+        assert_eq!(log_line(&r, &h), "A · Drink health potion +40 HP");
+        h.f[1].mana = 30;
+        let r = h.take_turn(ManaPotion).unwrap();
+        assert_eq!(log_line(&r, &h), "B · Drink mana potion +20 MP");
+        let mut w = duel(Warrior, Assassin);
+        w.f[0].shield = 0;
+        let r = w.take_turn(RaiseShield).unwrap();
+        assert_eq!(log_line(&r, &w), "A · Raise shield +25 shield");
+        let r = w.take_turn(Rest).unwrap();
+        assert_eq!(log_line(&r, &w), "B · Rest +25 ST");
+        let r = w.take_turn(Flee).unwrap();
+        assert_eq!(log_line(&r, &w), "A fled");
     }
 }
