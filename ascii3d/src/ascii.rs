@@ -361,12 +361,15 @@ fn to_color(rgb: Vec3) -> Color {
 pub struct FineGovernor {
     recent: std::collections::VecDeque<f32>,
     calm: u32,
+    /// Calm frames needed to restore full detail; grows each time detail has to drop
+    /// again, so a borderline machine settles instead of flickering.
+    need: u32,
     pub reduced: bool,
 }
 
 impl FineGovernor {
     pub fn new() -> FineGovernor {
-        FineGovernor { recent: std::collections::VecDeque::new(), calm: 0, reduced: false }
+        FineGovernor { recent: std::collections::VecDeque::new(), calm: 0, need: 60, reduced: false }
     }
 
     /// Feed one frame's raymarch time; returns the fine mask for this frame.
@@ -378,12 +381,18 @@ impl FineGovernor {
         }
         let avg = self.recent.iter().sum::<f32>() / self.recent.len() as f32;
         if !self.reduced && avg > 25.0 {
+            if self.calm > 0 {
+                // Dropped again after a restore: wait longer next time.
+                self.need = (self.need * 4).min(60 * 600);
+            }
             self.reduced = true;
             self.calm = 0;
+            self.recent.clear();
         } else if self.reduced {
             self.calm = if avg < 18.0 { self.calm + 1 } else { 0 };
-            if self.calm >= 60 {
+            if self.calm >= self.need {
                 self.reduced = false;
+                self.recent.clear();
             }
         }
         if self.reduced { [active == 0, active == 1] } else { [true, true] }
@@ -429,5 +438,22 @@ mod tests {
         assert!(matches!(cell([true, true]), CellOut::Defer));
         assert!(matches!(cell([false, true]), CellOut::Defer));
         assert!(matches!(cell([true, false]), CellOut::Glyph(_)), "unmasked fighter drawn on the coarse grid");
+    }
+
+    #[test]
+    fn governor_does_not_flicker_on_a_borderline_machine() {
+        // Full detail costs 26 ms, reduced detail 15 ms: right on the thresholds.
+        let mut g = FineGovernor::new();
+        let mut mask = [true, true];
+        let mut toggles = 0;
+        for _ in 0..3600 {
+            let ms = if mask == [true, true] { 26.0 } else { 15.0 };
+            let next = g.update(ms, 0);
+            if next != mask {
+                toggles += 1;
+            }
+            mask = next;
+        }
+        assert!(toggles <= 8, "{toggles} detail switches in a minute");
     }
 }

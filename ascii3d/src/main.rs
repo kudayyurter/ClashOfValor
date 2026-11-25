@@ -274,6 +274,10 @@ async fn main() {
                     }
                     world.tick(&mut flow, STEP, true);
                 }
+                // Wait out the next menu's input grace.
+                for _ in 0..20 {
+                    world.tick(&mut flow, STEP, true);
+                }
             }
         }
     }

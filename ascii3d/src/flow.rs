@@ -10,6 +10,9 @@ use crate::anim::{self, Action};
 use crate::models::Pose;
 use crate::ui::{Key, Menu, NameField};
 
+/// Seconds a newly shown menu ignores input.
+const MENU_GRACE: f32 = 0.25;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Input {
     Up,
@@ -43,6 +46,9 @@ pub struct Flow {
     impact_pending: bool,
     /// Seconds since the last impact (drives the target's flinch).
     pub since_impact: f32,
+    /// A menu that just appeared ignores input this long, so mashing Enter to skip an
+    /// animation can't also pick the next player's move.
+    menu_wait: f32,
     pub quit: bool,
 }
 
@@ -57,6 +63,7 @@ impl Flow {
             last: None,
             impact_pending: false,
             since_impact: 10.0,
+            menu_wait: 0.0,
             quit: false,
         }
     }
@@ -117,6 +124,7 @@ impl Flow {
     /// Advance the move animation by `dt` seconds.
     pub fn update(&mut self, dt: f32) {
         self.since_impact += dt;
+        self.menu_wait = (self.menu_wait - dt).max(0.0);
         let Screen::Animate { action, collapse } = &mut self.screen else { return };
         if !action.done() {
             if action.advance(dt) {
@@ -126,8 +134,14 @@ impl Flow {
         }
         match self.duel.as_ref().and_then(|d| d.end) {
             Some(End::Won { .. }) if *collapse < 1.0 => *collapse = (*collapse + dt).min(1.0),
-            Some(_) => self.screen = Screen::Result { menu: Menu::plain(&["Rematch", "New duel", "Quit"]) },
-            None => self.screen = Screen::Choose { menu: self.move_menu() },
+            Some(_) => {
+                self.screen = Screen::Result { menu: Menu::plain(&["Rematch", "New duel", "Quit"]) };
+                self.menu_wait = MENU_GRACE;
+            }
+            None => {
+                self.screen = Screen::Choose { menu: self.move_menu() };
+                self.menu_wait = MENU_GRACE;
+            }
         }
     }
 
@@ -221,8 +235,10 @@ impl Flow {
                 } else {
                     let duel = Duel::new(Fighter::new(&names[0], classes[0]), Fighter::new(&names[1], classes[1]));
                     self.start_duel(duel);
+                    self.menu_wait = MENU_GRACE;
                 }
             }
+            Screen::Choose { .. } | Screen::Result { .. } if self.menu_wait > 0.0 => {}
             Screen::Choose { menu } => {
                 let Some(k) = menu_key(i) else { return };
                 let Some(pick) = menu.handle(k) else { return };
@@ -242,6 +258,7 @@ impl Flow {
                         let mut d = self.duel.take().expect("duel");
                         d.rematch();
                         self.start_duel(d);
+                        self.menu_wait = MENU_GRACE;
                     }
                     Some(1) => *self = Flow::new(),
                     Some(_) => self.quit = true,
@@ -353,11 +370,13 @@ mod tests {
     fn settle(f: &mut Flow) {
         for _ in 0..100 {
             if !matches!(f.screen, Screen::Animate { .. }) {
-                return;
+                break;
             }
             f.update(0.1);
         }
-        panic!("animation never finished");
+        assert!(!matches!(f.screen, Screen::Animate { .. }), "animation never finished");
+        // Let the new menu's input grace pass.
+        f.update(0.3);
     }
 
     /// Feed each input as its own frame.
@@ -636,5 +655,45 @@ mod tests {
         assert_eq!(f.caption.len(), 1, "only the action line before impact");
         f.step(&[Space]);
         assert_eq!(f.caption[1], "B's shield absorbs 14 damage (11/25 remaining).");
+    }
+
+    #[test]
+    fn mashing_enter_after_a_skip_does_not_play_the_next_move() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(1)]);
+        for _ in 0..3 {
+            f.step(&[Enter]);
+            f.update(1.0 / 60.0);
+        }
+        assert_eq!(stage(&f), "choose 1");
+        assert_eq!(f.duel.as_ref().unwrap().f[0].health, 100, "B did not act");
+        f.update(0.3);
+        frames(&mut f, &[Enter]);
+        assert_eq!(stage(&f), "animate", "the menu works once the grace passes");
+    }
+
+    #[test]
+    fn mashing_enter_after_a_knockout_shows_the_result() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Assassin]);
+        f.duel.as_mut().unwrap().f[1].health = 10;
+        frames(&mut f, &[Digit(1)]);
+        for _ in 0..4 {
+            f.step(&[Enter]);
+            f.update(1.0 / 60.0);
+        }
+        assert_eq!(stage(&f), "result");
+    }
+
+    #[test]
+    fn class_pick_mash_does_not_play_first_move() {
+        let mut f = Flow::new();
+        frames(&mut f, &typed("A"));
+        frames(&mut f, &[Enter, Enter]);
+        frames(&mut f, &typed("B"));
+        frames(&mut f, &[Enter]);
+        f.step(&[Enter]);
+        f.update(1.0 / 60.0);
+        f.step(&[Enter]);
+        assert_eq!(stage(&f), "choose 0");
     }
 }

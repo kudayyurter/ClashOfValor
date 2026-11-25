@@ -117,6 +117,16 @@ pub fn text_centered(font: &Font, s: &str, cx: f32, y: f32, size: u16, color: Co
     draw_text_ex(s, cx - text_w(font, s, size) * 0.5, y, tp(font, size, color));
 }
 
+/// Stamina has no cap: its bar fills against 100.
+pub fn stamina_fill(shown: f32) -> f32 {
+    (shown / 100.0).clamp(0.0, 1.0)
+}
+
+/// Fraction of a capped bar.
+fn fill(shown: f32, max: i32) -> f32 {
+    if max > 0 { (shown / max as f32).clamp(0.0, 1.0) } else { 0.0 }
+}
+
 pub fn menu_height(m: &Menu) -> f32 {
     m.items.len() as f32 * ROW
 }
@@ -150,14 +160,13 @@ pub fn draw_menu(font: &Font, m: &Menu, cx: f32, top: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn bar(font: &Font, x: f32, y: f32, w: f32, label: &str, shown: f32, value: i32, max: i32, color: Vec3) {
+fn bar(font: &Font, x: f32, y: f32, w: f32, label: &str, frac: f32, text: &str, color: Vec3) {
     let lw = 30.0;
     draw_text_ex(label, x, y + 10.0, tp(font, 13, DIM));
     let bw = w - lw - 70.0;
     draw_rectangle(x + lw, y + 1.0, bw, 10.0, Color::new(0.15, 0.15, 0.2, 1.0));
-    let f = if max > 0 { (shown / max as f32).clamp(0.0, 1.0) } else { 0.0 };
-    draw_rectangle(x + lw, y + 1.0, bw * f, 10.0, rgb(color));
-    draw_text_ex(format!("{value}/{max}"), x + lw + bw + 8.0, y + 10.0, tp(font, 13, TEXT));
+    draw_rectangle(x + lw, y + 1.0, bw * frac, 10.0, rgb(color));
+    draw_text_ex(text, x + lw + bw + 8.0, y + 10.0, tp(font, 13, TEXT));
 }
 
 /// What one status panel shows. `bars` are the animated values for health, stamina and
@@ -196,16 +205,16 @@ pub fn draw_panels(font: &Font, views: [PanelView; 2]) {
         };
         draw_text_ex(&cls, pad + text_w(font, &f.name, FONT) + 10.0, y + 18.0, tp(font, 13, DIM));
         let bw = w - 20.0;
-        bar(font, pad, y + 26.0, bw, "HP", v.bars[0], f.health, f.max_health, HEALTH);
+        bar(font, pad, y + 26.0, bw, "HP", fill(v.bars[0], f.max_health), &format!("{}/{}", f.health, f.max_health), HEALTH);
         // Stamina has no cap: the bar fills at 100 and the number shows the real value.
-        bar(font, pad, y + 42.0, bw, "ST", v.bars[1].min(100.0), f.stamina, f.stamina.max(100), STAMINA);
+        bar(font, pad, y + 42.0, bw, "ST", stamina_fill(v.bars[1]), &f.stamina.to_string(), STAMINA);
         let potions = match f.class {
             Class::Warrior => {
-                bar(font, pad, y + 58.0, bw, "SH", v.bars[2], f.shield, f.max_shield, SHIELD);
+                bar(font, pad, y + 58.0, bw, "SH", fill(v.bars[2], f.max_shield), &format!("{}/{}", f.shield, f.max_shield), SHIELD);
                 format!("Potions {}", f.health_potions)
             }
             Class::Sorcerer => {
-                bar(font, pad, y + 58.0, bw, "MP", v.bars[2], f.mana, f.max_mana, MANA);
+                bar(font, pad, y + 58.0, bw, "MP", fill(v.bars[2], f.max_mana), &format!("{}/{}", f.mana, f.max_mana), MANA);
                 format!("Potions {}   Mana potions {}", f.health_potions, f.mana_potions)
             }
             Class::Assassin => {
@@ -320,5 +329,13 @@ mod tests {
         g.push(' ');
         g.push('o');
         assert_eq!(g.text, "B o");
+    }
+
+    #[test]
+    fn stamina_bar_fills_against_100() {
+        assert_eq!(stamina_fill(125.0), 1.0, "over 100 stays full");
+        assert_eq!(stamina_fill(100.0), 1.0);
+        assert_eq!(stamina_fill(50.0), 0.5);
+        assert_eq!(stamina_fill(-5.0), 0.0);
     }
 }
