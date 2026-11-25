@@ -128,19 +128,8 @@ impl World {
         }
         // Jolt the camera on impact: harder for crits and fire orbs, softer when the
         // shield takes it all.
-        if impact && let Some(res) = &flow.last {
-            for e in &res.events {
-                if let rules::Event::Hit { absorbed, damage, crit, .. } = *e {
-                    let k = if crit || res.mv == rules::Move::FireOrb {
-                        0.11
-                    } else if damage == 0 && absorbed > 0 {
-                        0.03
-                    } else {
-                        0.05
-                    };
-                    self.shake.kick(k);
-                }
-            }
+        if impact && let Some(k) = flow.last.as_ref().and_then(effects::shake_strength) {
+            self.shake.kick(k);
         }
         self.shake.update(dt);
         if let Screen::Animate { action, .. } = &flow.screen {
@@ -381,7 +370,9 @@ async fn main() {
         // ---- camera and grid ---------------------------------------------------
         let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.45, 0.0);
         let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
-        let (eye, target) = effects::shaken(eye, target, world.shake.offset());
+        let fwd = (target - eye).normalize();
+        let right = fwd.cross(Vec3::Y).normalize();
+        let (eye, target) = effects::shaken(eye, target, world.shake.offset_in(right, right.cross(fwd)));
         let (sw, sh) = (screen_width(), screen_height());
         let cam = Cam::look_at(eye, target, 50.0, sw, sh);
 

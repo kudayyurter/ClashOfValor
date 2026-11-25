@@ -79,15 +79,30 @@ impl Shake {
         self.amp = (self.peak * (1.0 - self.t / Self::DECAY)).max(0.0);
     }
 
-    pub fn offset(&self) -> Vec3 {
+    /// The jolt in the camera's own right/up plane, so it never moves the camera
+    /// toward or away from what it looks at.
+    pub fn offset_in(&self, right: Vec3, up: Vec3) -> Vec3 {
         if self.amp <= 0.0 {
             return Vec3::ZERO;
         }
         let t = self.t;
-        let v = vec3((t * 67.0).sin(), 0.8 * (t * 53.0 + 1.7).sin(), 0.3 * (t * 41.0 + 0.5).sin());
-        // |v| <= sqrt(1 + 0.64 + 0.09) < 1.32
-        v * (self.amp / 1.32)
+        // |(a, 0.8 b)| <= sqrt(1 + 0.64) < 1.29 for unit right/up.
+        (right * (t * 67.0).sin() + up * (0.8 * (t * 53.0 + 1.7).sin())) * (self.amp / 1.29)
     }
+}
+
+/// How hard an impact shakes the camera, or `None` if the move hit nothing. A hit the
+/// shield fully absorbs is a light tap, even from a crit or a fire orb.
+pub fn shake_strength(res: &crate::rules::Resolution) -> Option<f32> {
+    res.events
+        .iter()
+        .filter_map(|e| match *e {
+            Event::Hit { absorbed, damage, .. } if damage == 0 && absorbed > 0 => Some(0.03),
+            Event::Hit { crit, .. } if crit || res.mv == Move::FireOrb => Some(0.11),
+            Event::Hit { .. } => Some(0.05),
+            _ => None,
+        })
+        .reduce(f32::max)
 }
 
 /// Move eye and target together.
@@ -515,11 +530,11 @@ mod tests {
         s.kick(0.1);
         for _ in 0..10 {
             s.update(0.013);
-            assert!(s.offset().length() <= 0.1 + 1e-4);
+            assert!(s.offset_in(Vec3::X, Vec3::Y).length() <= 0.1 + 1e-4);
         }
         s.update(0.35);
         assert_eq!(s.amp, 0.0);
-        assert_eq!(s.offset(), Vec3::ZERO);
+        assert_eq!(s.offset_in(Vec3::X, Vec3::Y), Vec3::ZERO);
         s.kick(0.05);
         s.kick(0.03);
         assert_eq!(s.amp, 0.05, "a weaker kick never shrinks a stronger one");
@@ -532,8 +547,41 @@ mod tests {
         s.kick(0.11);
         for _ in 0..12 {
             s.update(0.02);
-            let (e, t) = shaken(eye, target, s.offset());
+            let (e, t) = shaken(eye, target, s.offset_in(Vec3::X, Vec3::Y));
             assert!(((e - t).length() - (eye - target).length()).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn shake_never_moves_toward_the_fighters() {
+        let target = vec3(0.0, 1.45, 0.0);
+        let mut s = Shake::default();
+        s.kick(0.11);
+        for yaw in [0.0f32, 0.7, 1.57, 2.5, -1.2] {
+            let eye = target + vec3(yaw.sin(), 0.3, yaw.cos()) * 5.4;
+            let fwd = (target - eye).normalize();
+            let right = fwd.cross(Vec3::Y).normalize();
+            let up = right.cross(fwd);
+            for _ in 0..8 {
+                s.update(0.01);
+                let o = s.offset_in(right, up);
+                assert!(o.dot(fwd).abs() < 1e-5, "yaw {yaw}: forward part {}", o.dot(fwd));
+                assert!(o.length() <= s.amp + 1e-4);
+            }
+            s.kick(0.11);
+        }
+    }
+
+    #[test]
+    fn shake_strength_per_hit() {
+        use crate::rules::Resolution;
+        let res = |mv, events| Resolution { actor: 0, mv, events, narration: vec![] };
+        let hit = |absorbed, damage, crit| Event::Hit { target: 1, absorbed, damage, crit };
+        assert_eq!(shake_strength(&res(Move::Attack, vec![hit(0, 10, false)])), Some(0.05));
+        assert_eq!(shake_strength(&res(Move::CritAttack, vec![hit(0, 15, true)])), Some(0.11));
+        assert_eq!(shake_strength(&res(Move::FireOrb, vec![hit(4, 10, false)])), Some(0.11));
+        assert_eq!(shake_strength(&res(Move::FireOrb, vec![hit(14, 0, false)])), Some(0.03), "fully blocked");
+        assert_eq!(shake_strength(&res(Move::CritAttack, vec![hit(15, 0, true)])), Some(0.03));
+        assert_eq!(shake_strength(&res(Move::Rest, vec![Event::Rested { who: 0, hp: 0, stamina: 25, mana: 0 }])), None);
     }
 }
