@@ -294,7 +294,7 @@ pub fn draw_panels(font: &Font, views: [PanelView; 2]) {
             Some(t) => format!("{potions}  ·  {t}"),
             None => potions,
         };
-        draw_text_ex(&fit(&line, chars_in(font, inner, 13)), pad, y + 92.0, tp(font, 13, DIM));
+        draw_text_ex(fit(&line, chars_in(font, inner, 13)), pad, y + 92.0, tp(font, 13, DIM));
     }
 }
 
