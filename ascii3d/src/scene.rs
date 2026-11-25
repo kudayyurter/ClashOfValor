@@ -255,7 +255,7 @@ impl Scene {
             });
         }
 
-        let fire = vec3(0.3, ground_height(0.3, -2.0), -2.0);
+        let fire = vec3(-0.6, ground_height(-0.6, -3.0), -3.0);
         props.push(Prop {
             center: fire + vec3(0.0, 0.4, 0.0),
             radius: 0.9,
@@ -470,7 +470,8 @@ impl Scene {
         }
         if hit.mat == Mat::Orb {
             let h = hash2((p.x * 30.0 + self.time * 20.0) as i32, (p.y * 30.0) as i32);
-            let rgb = vec3(1.0, 0.85, 0.4).lerp(vec3(1.0, 0.3, 0.05), h);
+            // White-hot core so the orb stands apart from the campfire's oranges.
+            let rgb = vec3(1.0, 0.97, 0.78).lerp(vec3(1.0, 0.6, 0.2), h);
             return Shade { rgb, lum: 1.0 - 0.4 * h, p };
         }
         if hit.mat == Mat::Fire {
@@ -490,6 +491,9 @@ impl Scene {
         if hit.mat.is_hero() {
             // Character fill light from the viewer, so fighters read against the night.
             rgb += base * vec3(0.55, 0.55, 0.65) * n.dot(-rd).max(0.0);
+            // Warm rim on the silhouette edges, so both fighters read equally.
+            let rim = (1.0 - n.dot(-rd).max(0.0)).powi(2);
+            rgb += base * vec3(0.5, 0.32, 0.18) * rim * 0.9;
         }
         if matches!(hit.mat, Mat::Plate | Mat::Blade | Mat::Chain) {
             let r = rd - n * 2.0 * rd.dot(n);
@@ -510,7 +514,7 @@ pub const BODY_ID: [u16; 2] = [10, 50];
 /// Effect parts (the fire orb) use ids 90..100.
 pub const FX_ID: u16 = 90;
 /// Player accents: blue, red.
-pub const ACCENTS: [Vec3; 2] = [Vec3::new(0.25, 0.45, 1.0), Vec3::new(0.95, 0.25, 0.25)];
+pub const ACCENTS: [Vec3; 2] = [Vec3::new(0.35, 0.65, 1.0), Vec3::new(0.95, 0.25, 0.25)];
 
 /// How far a fully fallen body tilts back (radians).
 const FALL_ANGLE: f32 = 1.5;
@@ -643,5 +647,12 @@ mod tests {
         assert!(s.contact_shadow(moved) < 0.5, "shadow follows a lunge");
         s.bodies[0].dim = 1.0;
         assert_eq!(s.contact_shadow(moved), 1.0);
+    }
+
+    #[test]
+    fn fire_off_action_line() {
+        let s = two(Class::Warrior, Class::Sorcerer);
+        let centre = (s.bodies[0].pos + s.bodies[1].pos) * 0.5;
+        assert!((s.fire.x - centre.x).abs() > 0.4 || s.fire.z < -2.5, "fire at {:?}", s.fire);
     }
 }

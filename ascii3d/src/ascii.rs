@@ -192,8 +192,8 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     CellOut::Glyph(Cell { glyph, color: to_color(rgb * fade), depth: hit.t, glow: glow * fade })
 }
 
-/// Where the decorative moon hangs: behind the fighters, between the status panels.
-pub const MOON: Vec3 = Vec3::new(0.119, 0.069, -0.990);
+/// Where the decorative moon hangs: behind the fighters, centred between the status panels.
+pub const MOON: Vec3 = Vec3::new(-0.02, 0.193, -0.981);
 
 /// Glyph for a ray that hits nothing: hills on the horizon, the moon, or stars.
 /// `None` leaves the cell empty.

@@ -332,7 +332,7 @@ async fn main() {
     // Developer readout (fps, raymarch, grid) toggled with F3.
     let mut show_info = false;
     // The camera distance is fixed: there is no zoom.
-    let (mut cam_yaw, mut cam_pitch, cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
+    let (mut cam_yaw, mut cam_pitch, cam_dist) = (args.yaw.to_radians(), 0.16f32, args.dist);
     let mut size_i = 1usize;
     let mut opts = Opts { edges: !args.noedges, fine: true, fine_mask: [true, true] };
     let mut governor = FineGovernor::new();
@@ -401,7 +401,7 @@ async fn main() {
         });
 
         // ---- camera and grid ---------------------------------------------------
-        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.45, 0.0);
+        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.25, 0.0);
         let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
         let fwd = (target - eye).normalize();
         let right = fwd.cross(Vec3::Y).normalize();
@@ -477,6 +477,12 @@ async fn main() {
             if let CellOut::Glyph(cell) = c {
                 if cell.glow > 0.0 {
                     draw_circle(x + fw * 0.5, y + fh * 0.5, fh * 1.6, Color::new(cell.color.r, cell.color.g, cell.color.b, 0.06 * cell.glow));
+                }
+                // A dim solid block behind each fighter glyph, so fighters read as solid
+                // shapes rather than thin strokes. Light sources stay unboxed.
+                if cell.glow == 0.0 {
+                    let c = cell.color;
+                    draw_glyph(&font, '█', *x, y + fh * 0.78, fs / 2, Color::new(c.r * 0.3, c.g * 0.3, c.b * 0.3, 1.0));
                 }
                 draw_glyph(&font, cell.glyph, *x, y + fh * 0.78, fs / 2, cell.color);
             }
