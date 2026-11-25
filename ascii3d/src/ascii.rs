@@ -79,6 +79,8 @@ pub enum CellOut {
 pub struct Opts {
     pub edges: bool,
     pub fine: bool,
+    /// Which fighters draw on the fine grid.
+    pub fine_mask: [bool; 2],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -98,7 +100,7 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
         ids[k] = hit.id;
         mats[k] = hit.mat;
         ts[k] = hit.t;
-        if hit.mat.is_hero() {
+        if is_fine(hit.id, hit.mat, opts) {
             hero_n += 1;
         }
     }
@@ -111,7 +113,7 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     let mut best_c = 0;
     for k in 0..n {
         let id = ids[k];
-        if id == SKY || (matches!(pass, Pass::Fine) && !mats[k].is_hero()) {
+        if id == SKY || (matches!(pass, Pass::Fine) && !is_fine(id, mats[k], opts)) {
             continue;
         }
         let c = ids[..n].iter().filter(|&&j| j == id).count();
@@ -167,6 +169,11 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     };
     let fade = 1.0 - body.map_or(0.0, |b| b.dim);
     CellOut::Glyph(Cell { glyph, color: to_color(rgb * fade), depth: hit.t, glow: glow * fade })
+}
+
+/// Does this hit belong on the fine grid: a hero material of a masked fighter.
+fn is_fine(id: u16, mat: Mat, opts: &Opts) -> bool {
+    mat.is_hero() && Scene::owner(id).is_some_and(|i| opts.fine_mask[i])
 }
 
 /// Pick an outline glyph from the direction of the coverage centroid.
@@ -347,4 +354,80 @@ fn leather_glyph(scene: &Scene, hit: &Hit, sh: &Shade) -> (char, Vec3) {
 fn to_color(rgb: Vec3) -> Color {
     let c = rgb.max(Vec3::ZERO).powf(0.6).min(Vec3::ONE);
     Color::new(c.x, c.y, c.z, 1.0)
+}
+
+/// Decides which fighters get the fine grid: both while frames are fast, only the
+/// acting fighter while they are slow.
+pub struct FineGovernor {
+    recent: std::collections::VecDeque<f32>,
+    calm: u32,
+    pub reduced: bool,
+}
+
+impl FineGovernor {
+    pub fn new() -> FineGovernor {
+        FineGovernor { recent: std::collections::VecDeque::new(), calm: 0, reduced: false }
+    }
+
+    /// Feed one frame's raymarch time; returns the fine mask for this frame.
+    pub fn update(&mut self, ms: f32, active: usize) -> [bool; 2] {
+        // Mean of the last 30 frames.
+        self.recent.push_back(ms);
+        if self.recent.len() > 30 {
+            self.recent.pop_front();
+        }
+        let avg = self.recent.iter().sum::<f32>() / self.recent.len() as f32;
+        if !self.reduced && avg > 25.0 {
+            self.reduced = true;
+            self.calm = 0;
+        } else if self.reduced {
+            self.calm = if avg < 18.0 { self.calm + 1 } else { 0 };
+            if self.calm >= 60 {
+                self.reduced = false;
+            }
+        }
+        if self.reduced { [active == 0, active == 1] } else { [true, true] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::Class;
+
+    #[test]
+    fn governor_drops_to_active_when_slow_and_recovers() {
+        let mut g = FineGovernor::new();
+        assert_eq!(g.update(10.0, 0), [true, true]);
+        let mut m = [true, true];
+        for _ in 0..30 {
+            m = g.update(32.0, 1);
+        }
+        assert_eq!(m, [false, true]);
+        for _ in 0..59 {
+            m = g.update(12.0, 0);
+        }
+        assert_eq!(m, [true, false], "not yet: needs 60 calm frames");
+        for _ in 0..30 {
+            m = g.update(12.0, 0);
+        }
+        assert_eq!(m, [true, true]);
+    }
+
+    #[test]
+    fn mask_controls_which_fighter_defers() {
+        let mut s = Scene::new();
+        s.set_fighters([Class::Warrior, Class::Warrior]);
+        s.update(0.016);
+        let chest = s.bodies[1].to_world(vec3(0.0, 1.18, 0.0));
+        let (w, h) = (200.0, 200.0);
+        let cam = Cam::look_at(chest + vec3(0.0, 0.3, 4.0), chest, 50.0, w, h);
+        let cell = |mask: [bool; 2]| {
+            let opts = Opts { edges: true, fine: true, fine_mask: mask };
+            sample_cell(&s, &cam, 96.0, 96.0, 8.0, 8.0, 3, Pass::Coarse, &opts)
+        };
+        assert!(matches!(cell([true, true]), CellOut::Defer));
+        assert!(matches!(cell([false, true]), CellOut::Defer));
+        assert!(matches!(cell([true, false]), CellOut::Glyph(_)), "unmasked fighter drawn on the coarse grid");
+    }
 }

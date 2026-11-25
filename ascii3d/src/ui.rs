@@ -149,6 +149,7 @@ pub fn draw_menu(font: &Font, m: &Menu, cx: f32, top: f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bar(font: &Font, x: f32, y: f32, w: f32, label: &str, shown: f32, value: i32, max: i32, color: Vec3) {
     let lw = 30.0;
     draw_text_ex(label, x, y + 10.0, tp(font, 13, DIM));
@@ -156,7 +157,7 @@ fn bar(font: &Font, x: f32, y: f32, w: f32, label: &str, shown: f32, value: i32,
     draw_rectangle(x + lw, y + 1.0, bw, 10.0, Color::new(0.15, 0.15, 0.2, 1.0));
     let f = if max > 0 { (shown / max as f32).clamp(0.0, 1.0) } else { 0.0 };
     draw_rectangle(x + lw, y + 1.0, bw * f, 10.0, rgb(color));
-    draw_text_ex(&format!("{value}/{max}"), x + lw + bw + 8.0, y + 10.0, tp(font, 13, TEXT));
+    draw_text_ex(format!("{value}/{max}"), x + lw + bw + 8.0, y + 10.0, tp(font, 13, TEXT));
 }
 
 /// What one status panel shows. `bars` are the animated values for health, stamina and
@@ -208,7 +209,7 @@ pub fn draw_panels(font: &Font, views: [PanelView; 2]) {
                 format!("Potions {}   Mana potions {}", f.health_potions, f.mana_potions)
             }
             Class::Assassin => {
-                draw_text_ex(&format!("Crit x{:.1}", f.crit), pad, y + 68.0, tp(font, 13, DIM));
+                draw_text_ex(format!("Crit x{:.1}", f.crit), pad, y + 68.0, tp(font, 13, DIM));
                 format!("Potions {}", f.health_potions)
             }
         };

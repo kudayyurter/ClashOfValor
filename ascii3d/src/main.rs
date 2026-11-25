@@ -20,7 +20,7 @@ mod rules;
 mod scene;
 mod ui;
 
-use ascii::{Cam, CellOut, Opts, Pass, sample_cell};
+use ascii::{Cam, CellOut, FineGovernor, Opts, Pass, sample_cell};
 use macroquad::prelude::*;
 use rayon::prelude::*;
 use flow::{Flow, Input, Screen};
@@ -281,7 +281,8 @@ async fn main() {
     let mut bars: Option<[[f32; 3]; 2]> = None;
     let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
-    let mut opts = Opts { edges: !args.noedges, fine: true };
+    let mut opts = Opts { edges: !args.noedges, fine: true, fine_mask: [true, true] };
+    let mut governor = FineGovernor::new();
     let mut last_mouse: Vec2 = mouse_position().into();
     let mut frame = 0u32;
 
@@ -366,7 +367,7 @@ async fn main() {
             .into_par_iter()
             .map(|i| {
                 let (cx, cy) = (i % cols, i / cols);
-                sample_cell(&scene, &cam, cx as f32 * cw, cy as f32 * ch, cw, ch, 3, Pass::Coarse, &opts)
+                sample_cell(scene, &cam, cx as f32 * cw, cy as f32 * ch, cw, ch, 3, Pass::Coarse, &opts)
             })
             .collect();
 
@@ -386,6 +387,10 @@ async fn main() {
             .collect();
 
         let render_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        // Slow frames drop the waiting fighter to the coarse grid (screenshots keep both).
+        if args.shot.is_none() {
+            opts.fine_mask = governor.update(render_ms, active);
+        }
         // ---- draw --------------------------------------------------------------
         // Screenshot mode draws into an off-screen texture (reading back the window's
         // framebuffer is unreliable on Wayland).
@@ -398,13 +403,12 @@ async fn main() {
         clear_background(BG);
 
         for (i, c) in coarse.iter().enumerate() {
-            if let CellOut::Glyph(cell) = c {
-                if cell.glow > 0.0 {
+            if let CellOut::Glyph(cell) = c
+                && cell.glow > 0.0 {
                     let (x, y) = ((i % cols) as f32 * cw + cw * 0.5, (i / cols) as f32 * ch + ch * 0.5);
                     let col = Color::new(cell.color.r, cell.color.g * 0.7, cell.color.b * 0.4, 0.05 * cell.glow);
                     draw_circle(x, y, ch * 1.8, col);
                 }
-            }
         }
         for (i, c) in coarse.iter().enumerate() {
             if let CellOut::Glyph(cell) = c {
@@ -454,7 +458,7 @@ async fn main() {
         }
 
         draw_ui(&font, &opts, fs, cols, rows, deferred.len(), render_ms);
-        draw_duel_ui(&font, &flow, &scene, bars, frame);
+        draw_duel_ui(&font, &flow, scene, bars, frame);
 
         if let (Some(rt), Some(path)) = (shot_rt, &args.shot) {
             set_default_camera();
@@ -479,7 +483,11 @@ fn draw_ui(font: &Font, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred
         fs,
         deferred * 4,
         if opts.edges { "on" } else { "off" },
-        if opts.fine { "on" } else { "off" },
+        match (opts.fine, opts.fine_mask) {
+            (false, _) => "off",
+            (true, [true, true]) => "both",
+            _ => "active",
+        },
     );
     draw_text_ex(&info, 8.0, 15.0, tp(ui::DIM));
     let help = "arrows/digits choose  Enter confirm  M/N armour  RMB orbit  wheel zoom  E edges  F fine  G glyphs  Esc quit";
@@ -509,7 +517,7 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
             let y = sh * 0.6;
             if *naming {
                 let title = format!("Player {}, enter your name", who + 1);
-                ui::draw_name_prompt(font, &title, field, accent, y, (frame / 30) % 2 == 0);
+                ui::draw_name_prompt(font, &title, field, accent, y, (frame / 30).is_multiple_of(2));
             } else {
                 let title = format!("{}, choose your class", flow.names()[*who]);
                 ui::text_centered(font, &title, cx, y, ui::FONT, ui::rgb(accent));

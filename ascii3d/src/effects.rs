@@ -196,11 +196,10 @@ impl Fx {
                     self.orb = None;
                 }
             }
-            Move::Flee => {
-                if window(p0, p1, 0.2, 1.0) && rnd(0.0, 1.0) < 0.7 {
+            Move::Flee
+                if window(p0, p1, 0.2, 1.0) && rnd(0.0, 1.0) < 0.7 => {
                     self.burst(world(me, me.anchors.chest), 2, Kind::Smoke, vec3(0.5, 0.5, 0.58));
                 }
-            }
             _ => {}
         }
 

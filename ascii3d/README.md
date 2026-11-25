@@ -1,17 +1,47 @@
 # Clash of Valor 3D (prototype)
 
-The direction for the next Clash of Valor: a real-time 3D world drawn entirely in glyphs. This is a Rust prototype of the renderer, inspired by Senje's ASCII MMORPG (@ansenjeo). It is a CPU ray marcher whose output is a grid of glyphs instead of pixels.
+The direction for the next Clash of Valor: a real-time 3D world drawn entirely in glyphs, inspired by Senje's ASCII MMORPG (@ansenjeo). This prototype is a two-player, turn-based duel in that world. It is a CPU ray marcher whose output is a grid of glyphs instead of pixels.
 
 ```sh
 cd ascii3d
 cargo run --release
 ```
 
-Unlike the current game, this opens its own window (macroquad) rather than drawing in the terminal. The font is JetBrains Mono (Nerd Font build), shipped under the SIL Open Font License in `assets/OFL.txt`.
+Unlike the terminal game, this opens its own window (macroquad). The font is JetBrains Mono (Nerd Font build), shipped under the SIL Open Font License in `assets/OFL.txt`.
 
-Controls: WASD move, right mouse drag to turn the camera, wheel to zoom, M/N cycle the armour metal, L toggles chainmail/plate legs, E toggles outlines, F toggles the fine hero grid, G cycles glyph size, Esc quits.
+## The duel
 
-`--shot out.png [--yaw deg] [--dist d] [--metal i] [--walk]` renders one frame to a PNG and exits.
+Two players share one keyboard and take turns, like the terminal game's Player vs Player mode.
+
+1. Each player types a name and picks a class. The class previews in 3D as you browse the list.
+   - **Warrior:** a knight with sword and shield. The shield absorbs damage before health.
+   - **Assassin:** a hooded fighter with twin daggers and a critical strike.
+   - **Sorcerer:** a robed caster whose staff hurls fire orbs.
+2. On your turn, pick a move. Moves you can't afford are dimmed, with the reason shown. Every move plays out in 3D with its own effect: slash trails, sparks, the flying fire orb and its explosion, the shield rim, the crit vanish, potion sparkles and floating numbers.
+3. After a knockout or a flee, choose Rematch, New duel or Quit.
+
+The rules, costs and narration are copied from the C++ game (`src/rules.rs`).
+
+Controls:
+- Arrow keys move the highlight, Enter confirms, and number keys pick a menu option directly.
+- Space or Enter skips the move animation.
+- M/N change the armour metal on a Warrior's turn.
+- E toggles outlines, F toggles the fine fighter grid, G cycles the glyph size, L toggles chainmail or plate legs.
+- Right-mouse drag orbits the camera and the wheel zooms.
+- Esc quits.
+
+When frames get slow, only the fighter whose turn it is draws on the fine grid. The top bar shows `fine both`, `fine active` or `fine off`.
+
+## Screenshots
+
+`--shot out.png` renders one frame to a PNG and exits. Options:
+
+- `--duel warrior,sorcerer` skips setup.
+- `--moves 1,2` plays those menu choices in turn order first. An unavailable move prints `move N unavailable` and exits with status 1.
+- `--at 0.6` freezes the last scripted move at that point of its animation.
+- `--keys "Ann|2Bo|3"` types scripted keys, one per frame: `|` is Enter, `<` and `>` are Up and Down, `#` is Backspace.
+- `--size 800x500` sets the window size.
+- `--yaw deg` and `--dist d` set the camera, `--metal i` sets the armour metal, and `--noedges` turns outlines off.
 
 ## What the reels show, and how this copies it
 
