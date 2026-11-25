@@ -158,12 +158,14 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
     if glyph == ' ' {
         return CellOut::Empty(hit.t);
     }
+    let body = Scene::owner(best_id).and_then(|i| scene.bodies.get(i));
     let glow = match hit.mat {
         Mat::Fire => 1.0,
-        Mat::Blade if matches!(METALS[scene.metal].name, "Moonsteel" | "Emberstone") => 0.5,
+        Mat::Blade if matches!(METALS[body.map_or(0, |b| b.metal)].name, "Moonsteel" | "Emberstone") => 0.5,
         _ => 0.0,
     };
-    CellOut::Glyph(Cell { glyph, color: to_color(rgb), depth: hit.t, glow })
+    let fade = 1.0 - body.map_or(0.0, |b| b.dim);
+    CellOut::Glyph(Cell { glyph, color: to_color(rgb * fade), depth: hit.t, glow: glow * fade })
 }
 
 /// Pick an outline glyph from the direction of the coverage centroid.
@@ -203,7 +205,8 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
             (ramp(&['\'', '^', '*', '"', '^'], h), sh.rgb * 1.3)
         }
         Mat::Plate | Mat::Blade => {
-            let [bright, mid, dark] = METALS[scene.metal].glyphs;
+            let metal = Scene::owner(hit.id).and_then(|i| scene.bodies.get(i)).map_or(0, |b| b.metal);
+            let [bright, mid, dark] = METALS[metal].glyphs;
             let g = if l > 0.42 {
                 bright
             } else if l > 0.2 {
@@ -230,10 +233,13 @@ fn grass_glyph(scene: &Scene, cam: &Cam, sh: &Shade) -> (char, Vec3) {
     let h = hash2((p.x * 20.0).floor() as i32, (p.z * 20.0).floor() as i32);
     let t = scene.time;
     let mut lean = (p.x * 0.6 + t * 1.7 + (p.z * 0.4).sin()).sin() * 0.5 + (p.z * 1.3 - t * 1.1).sin() * 0.25;
-    let d = vec3(p.x - scene.player.x, 0.0, p.z - scene.player.z);
-    let dl = d.length();
-    if dl < 1.4 && dl > 1e-3 {
-        lean += d.dot(cam.right) / dl * (1.4 - dl) * 2.0;
+    for b in &scene.bodies {
+        let feet = b.to_world(Vec3::ZERO);
+        let d = vec3(p.x - feet.x, 0.0, p.z - feet.z);
+        let dl = d.length();
+        if dl < 1.4 && dl > 1e-3 {
+            lean += d.dot(cam.right) / dl * (1.4 - dl) * 2.0;
+        }
     }
     if h > 0.985 {
         let flower = vec3(0.6, 0.75, 1.0) * (sh.lum * 2.5).min(1.0);
@@ -255,8 +261,8 @@ fn grass_glyph(scene: &Scene, cam: &Cam, sh: &Shade) -> (char, Vec3) {
 
 /// The surface coordinates of the hit, in the hero part's own frame.
 fn hero_uv(scene: &Scene, hit: &Hit, sh: &Shade) -> (f32, f32) {
-    match scene.hero_part(hit.id) {
-        Some(part) => part.shape.surface_uv(scene.to_local(sh.p - scene.player)),
+    match scene.body_part(hit.id) {
+        Some((body, part)) => part.shape.surface_uv(body.to_local(sh.p)),
         None => (0.0, 0.0),
     }
 }

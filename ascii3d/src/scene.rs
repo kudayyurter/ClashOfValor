@@ -5,6 +5,8 @@
 //! (ascii.rs) asks that question several times per character cell and turns the answers
 //! into a glyph.
 
+use crate::models::{self, Anchors, Pose};
+use crate::rules::Class;
 use macroquad::math::{Vec3, vec3};
 
 pub const MAX_DIST: f32 = 60.0;
@@ -61,6 +63,8 @@ pub enum Shape {
     RBox { c: Vec3, half: Vec3, round: f32 },
     Rock { c: Vec3, r: f32 },
     Ellipsoid { c: Vec3, rad: Vec3 },
+    /// Capped cone from `a` (radius `ra`) to `b` (radius `rb`).
+    Cone { a: Vec3, b: Vec3, ra: f32, rb: f32 },
 }
 
 impl Shape {
@@ -87,6 +91,22 @@ impl Shape {
                 let k1 = (q / (rad * rad)).length();
                 if k1 < 1e-6 { -rad.min_element() } else { k0 * (k0 - 1.0) / k1 }
             }
+            Shape::Cone { a, b, ra, rb } => {
+                // Inigo Quilez's capped cone between two points.
+                let rba = rb - ra;
+                let baba = (b - a).dot(b - a);
+                let papa = (p - a).dot(p - a);
+                let paba = (p - a).dot(b - a) / baba;
+                let x = (papa - paba * paba * baba).max(0.0).sqrt();
+                let cax = (x - if paba < 0.5 { ra } else { rb }).max(0.0);
+                let cay = (paba - 0.5).abs() - 0.5;
+                let k = rba * rba + baba;
+                let f = ((rba * (x - ra) + paba * baba) / k).clamp(0.0, 1.0);
+                let cbx = x - ra - f * rba;
+                let cby = paba - f;
+                let s = if cbx < 0.0 && cay < 0.0 { -1.0 } else { 1.0 };
+                s * (cax * cax + cay * cay * baba).min(cbx * cbx + cby * cby * baba).sqrt()
+            }
         }
     }
 
@@ -99,7 +119,7 @@ impl Shape {
                 let d = p - c;
                 (d.z.atan2(d.x), d.y)
             }
-            Shape::Capsule { a, b, .. } => {
+            Shape::Capsule { a, b, .. } | Shape::Cone { a, b, .. } => {
                 let ba = b - a;
                 let len = ba.length();
                 let h = ((p - a).dot(ba) / (len * len)).clamp(0.0, 1.0);
@@ -144,16 +164,13 @@ pub struct Shade {
 
 pub struct Scene {
     pub time: f32,
-    pub player: Vec3,
-    pub yaw: f32,
-    walk: f32,
-    stride: f32,
-    /// Hero parts in the hero's local space (feet at the origin, facing +z).
-    pub hero: Vec<Part>,
+    /// The two fighters. Parts live in each body's local space.
+    pub bodies: Vec<Body>,
+    /// Effect parts in world space (ids from `FX_ID`).
+    pub fx_parts: Vec<Part>,
     pub props: Vec<Prop>,
     pub fire: Vec3,
     pub flicker: f32,
-    pub metal: usize,
     pub chain_legs: bool,
     /// Direction towards the moon (the main light).
     pub sun: Vec3,
@@ -168,12 +185,6 @@ pub fn hash2(x: i32, y: i32) -> f32 {
     let mut h = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
     h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
     ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
-}
-
-fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    let d = (b - a + PI).rem_euclid(TAU) - PI;
-    a + d * t
 }
 
 impl Scene {
@@ -191,7 +202,7 @@ impl Scene {
             (vec3(-2.0, 0.0, -5.0), 0.7),
             (vec3(7.0, 0.2, 5.0), 1.0),
             (vec3(-7.0, 0.2, -1.0), 1.3),
-            (vec3(1.5, 0.0, 6.0), 0.5),
+            (vec3(4.5, 0.0, 6.5), 0.5),
         ];
         for (c, r) in rocks {
             props.push(Prop {
@@ -229,7 +240,7 @@ impl Scene {
             });
         }
 
-        let fire = vec3(2.5, ground_height(2.5, 2.0), 2.0);
+        let fire = vec3(0.3, ground_height(0.3, -2.0), -2.0);
         props.push(Prop {
             center: fire + vec3(0.0, 0.4, 0.0),
             radius: 0.9,
@@ -252,71 +263,66 @@ impl Scene {
             ],
         });
 
-        let mut s = Scene {
+        Scene {
             time: 0.0,
-            player: Vec3::ZERO,
-            yaw: 0.4,
-            walk: 0.0,
-            stride: 0.0,
-            hero: Vec::new(),
+            bodies: Vec::new(),
+            fx_parts: Vec::new(),
             props,
             fire,
             flicker: 1.0,
-            metal: 0,
             chain_legs: true,
             sun: vec3(0.5, 0.8, 0.3).normalize(),
-        };
-        s.build_hero();
-        s
-    }
-
-    pub fn update(&mut self, dt: f32, move_dir: Vec3) {
-        self.time += dt;
-        if move_dir.length_squared() > 0.0 {
-            let d = move_dir.normalize();
-            self.player += d * 3.0 * dt;
-            self.yaw = lerp_angle(self.yaw, d.x.atan2(d.z), (dt * 12.0).min(1.0));
-            self.stride = (self.stride + dt * 6.0).min(1.0);
-        } else {
-            self.stride = (self.stride - dt * 6.0).max(0.0);
         }
-        self.walk += dt * 9.0 * self.stride;
-        self.player.y = ground_height(self.player.x, self.player.z);
+    }
+
+    /// Place the two fighters facing each other across the clearing.
+    pub fn set_fighters(&mut self, classes: [Class; 2]) {
+        let keep: Vec<usize> = self.bodies.iter().map(|b| b.metal).collect();
+        self.bodies = (0..2)
+            .map(|i| {
+                let x = if i == 0 { -1.9 } else { 1.9 };
+                Body {
+                    class: classes[i],
+                    pos: vec3(x, ground_height(x, 0.0), 0.0),
+                    yaw: if i == 0 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 },
+                    pose: Pose::default(),
+                    metal: keep.get(i).copied().unwrap_or(0),
+                    accent: ACCENTS[i],
+                    dim: 0.0,
+                    parts: Vec::new(),
+                    anchors: Anchors::default(),
+                }
+            })
+            .collect();
+        self.rebuild();
+    }
+
+    fn rebuild(&mut self) {
+        for (i, b) in self.bodies.iter_mut().enumerate() {
+            let (parts, anchors) = models::build(b.class, &b.pose, BODY_ID[i], self.chain_legs);
+            b.parts = parts;
+            b.anchors = anchors;
+        }
+    }
+
+    /// Which fighter owns a part id.
+    pub fn owner(id: u16) -> Option<usize> {
+        match id {
+            10..=49 => Some(0),
+            50..=89 => Some(1),
+            _ => None,
+        }
+    }
+
+    pub fn body_part(&self, id: u16) -> Option<(&Body, &Part)> {
+        let b = self.bodies.get(Self::owner(id)?)?;
+        Some((b, b.parts.iter().find(|p| p.id == id)?))
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.time += dt;
         self.flicker = 0.85 + 0.15 * (self.time * 13.0).sin() * (self.time * 7.3).cos();
-        self.build_hero();
-    }
-
-    /// Rebuild the knight from primitives each frame so the limbs can swing.
-    fn build_hero(&mut self) {
-        let s = self.walk.sin() * 0.22 * self.stride;
-        let legs = if self.chain_legs { Mat::Chain } else { Mat::Plate };
-        let hand_r = vec3(-0.33, 0.98, s * 0.8);
-        let p = |id, mat, shape| Part { id, mat, shape };
-        self.hero = vec![
-            p(10, legs, Shape::Capsule { a: vec3(0.11, 0.88, 0.0), b: vec3(0.11, 0.1, s), r: 0.085 }),
-            p(11, legs, Shape::Capsule { a: vec3(-0.11, 0.88, 0.0), b: vec3(-0.11, 0.1, -s), r: 0.085 }),
-            p(12, Mat::Plate, Shape::RBox { c: vec3(0.0, 1.18, 0.0), half: vec3(0.2, 0.26, 0.12), round: 0.06 }),
-            p(13, Mat::Plate, Shape::Sphere { c: vec3(0.27, 1.42, 0.0), r: 0.105 }),
-            p(14, Mat::Plate, Shape::Sphere { c: vec3(-0.27, 1.42, 0.0), r: 0.105 }),
-            p(15, Mat::Chain, Shape::Capsule { a: vec3(0.29, 1.36, 0.0), b: vec3(0.33, 0.98, -s * 0.8), r: 0.065 }),
-            p(16, Mat::Chain, Shape::Capsule { a: vec3(-0.29, 1.36, 0.0), b: hand_r, r: 0.065 }),
-            // The coif: a hood of chainmail over the head that drapes onto the shoulders.
-            p(17, Mat::Chain, Shape::Sphere { c: vec3(0.0, 1.66, 0.0), r: 0.16 }),
-            p(18, Mat::Chain, Shape::Capsule { a: vec3(0.0, 1.47, 0.0), b: vec3(0.0, 1.53, 0.0), r: 0.17 }),
-            p(19, Mat::Cloth, Shape::RBox { c: vec3(0.0, 1.1, -0.17), half: vec3(0.22, 0.4, 0.02), round: 0.01 }),
-            p(20, Mat::Blade, Shape::Capsule { a: hand_r + vec3(0.0, 0.0, 0.1), b: hand_r + vec3(0.0, 0.08, 0.95), r: 0.028 }),
-            p(21, Mat::Plate, Shape::RBox { c: hand_r + vec3(0.0, 0.0, 0.08), half: vec3(0.11, 0.02, 0.02), round: 0.01 }),
-        ];
-    }
-
-    pub fn hero_part(&self, id: u16) -> Option<&Part> {
-        self.hero.iter().find(|p| p.id == id)
-    }
-
-    /// World offset from the player -> hero local space.
-    pub fn to_local(&self, d: Vec3) -> Vec3 {
-        let (s, c) = self.yaw.sin_cos();
-        vec3(d.x * c - d.z * s, d.y, d.x * s + d.z * c)
+        self.rebuild();
     }
 
     /// The whole world as one distance function. Returns (distance, part id, material).
@@ -333,14 +339,26 @@ impl Scene {
                 }
             }
         }
-        let dp = p - self.player;
-        if (dp - vec3(0.0, 1.0, 0.0)).length() - 1.7 < best.0 {
-            let lp = self.to_local(dp);
-            for part in &self.hero {
+        for b in &self.bodies {
+            if b.dim >= 0.99 {
+                continue;
+            }
+            // to_local is rigid, so the bound test can run in local space.
+            let lp = b.to_local(p);
+            if (lp - models::BOUND_CENTER).length() - models::BOUND_RADIUS > best.0 {
+                continue;
+            }
+            for part in &b.parts {
                 let d = part.shape.dist(lp);
                 if d < best.0 {
                     best = (d, part.id, part.mat);
                 }
+            }
+        }
+        for part in &self.fx_parts {
+            let d = part.shape.dist(p);
+            if d < best.0 {
+                best = (d, part.id, part.mat);
             }
         }
         best
@@ -393,7 +411,9 @@ impl Scene {
     }
 
     fn base_color(&self, hit: &Hit, p: Vec3) -> Vec3 {
-        let metal = METALS[self.metal].rgb;
+        let owner = Self::owner(hit.id).and_then(|i| self.bodies.get(i));
+        let metal = METALS[owner.map_or(0, |b| b.metal)].rgb;
+        let accent = owner.map_or(ACCENTS[0], |b| b.accent);
         match hit.mat {
             Mat::Grass => {
                 let h = hash2((p.x * 3.0).floor() as i32, (p.z * 3.0).floor() as i32);
@@ -404,7 +424,7 @@ impl Scene {
             Mat::Wood => vec3(0.5, 0.33, 0.2),
             Mat::Plate | Mat::Blade => metal,
             Mat::Chain => metal * 0.9,
-            Mat::Cloth => vec3(0.2, 0.26, 0.8),
+            Mat::Cloth => accent * 0.8,
             Mat::Fire | Mat::Sky => Vec3::ONE,
         }
     }
@@ -434,5 +454,131 @@ impl Scene {
         rgb *= 1.0 - (hit.t / MAX_DIST).powf(0.7);
         let lum = rgb.dot(vec3(0.3, 0.59, 0.11)).clamp(0.0, 1.0);
         Shade { rgb, lum, p }
+    }
+}
+
+/// Fighter `i` owns part ids `10 + 40 * i .. 50 + 40 * i`.
+pub const BODY_ID: [u16; 2] = [10, 50];
+/// Effect parts (the fire orb) use ids 90..100.
+pub const FX_ID: u16 = 90;
+/// Player accents: blue, red.
+pub const ACCENTS: [Vec3; 2] = [Vec3::new(0.25, 0.45, 1.0), Vec3::new(0.95, 0.25, 0.25)];
+
+/// How far a fully fallen body tilts back (radians).
+const FALL_ANGLE: f32 = 1.5;
+
+/// One fighter in the world.
+pub struct Body {
+    pub class: Class,
+    pub pos: Vec3,
+    pub yaw: f32,
+    pub pose: Pose,
+    pub metal: usize,
+    pub accent: Vec3,
+    /// 0 drawn normally .. 1 invisible.
+    pub dim: f32,
+    pub parts: Vec<Part>,
+    pub anchors: Anchors,
+}
+
+impl Body {
+    /// World point -> model space: undo the yaw, then `pose.root`, then the fall tilt.
+    pub fn to_local(&self, world: Vec3) -> Vec3 {
+        let d = world - self.pos;
+        let (s, c) = self.yaw.sin_cos();
+        let q = vec3(d.x * c - d.z * s, d.y, d.x * s + d.z * c) - self.pose.root;
+        let (ts, tc) = (self.pose.fall * FALL_ANGLE).sin_cos();
+        vec3(q.x, q.y * tc - q.z * ts, q.y * ts + q.z * tc)
+    }
+
+    /// Model space -> world point. The fall tilts the body backwards about the feet.
+    pub fn to_world(&self, local: Vec3) -> Vec3 {
+        let (ts, tc) = (self.pose.fall * FALL_ANGLE).sin_cos();
+        let q = vec3(local.x, local.y * tc + local.z * ts, -local.y * ts + local.z * tc) + self.pose.root;
+        let (s, c) = self.yaw.sin_cos();
+        self.pos + vec3(q.x * c + q.z * s, q.y, -q.x * s + q.z * c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn two(a: Class, b: Class) -> Scene {
+        let mut s = Scene::new();
+        s.set_fighters([a, b]);
+        s.update(0.016);
+        s
+    }
+
+    #[test]
+    fn owner_of_ids() {
+        assert_eq!(Scene::owner(10), Some(0));
+        assert_eq!(Scene::owner(49), Some(0));
+        assert_eq!(Scene::owner(50), Some(1));
+        assert_eq!(Scene::owner(89), Some(1));
+        assert_eq!(Scene::owner(90), None);
+        assert_eq!(Scene::owner(101), None);
+        assert_eq!(Scene::owner(1), None);
+        assert_eq!(Scene::owner(0), None);
+    }
+
+    #[test]
+    fn bodies_have_disjoint_ids() {
+        let s = two(Class::Warrior, Class::Warrior);
+        assert_eq!(s.bodies.len(), 2);
+        for (i, b) in s.bodies.iter().enumerate() {
+            assert!(!b.parts.is_empty());
+            for p in &b.parts {
+                assert_eq!(Scene::owner(p.id), Some(i), "part {} of body {i}", p.id);
+                assert_eq!(s.body_part(p.id).map(|(_, q)| q.id), Some(p.id));
+            }
+        }
+    }
+
+    #[test]
+    fn local_world_roundtrip() {
+        let mut s = two(Class::Warrior, Class::Sorcerer);
+        s.bodies[1].pose.root = vec3(0.2, 0.0, 1.3);
+        s.bodies[1].pose.fall = 0.6;
+        let b = &s.bodies[1];
+        for p in [vec3(0.3, 1.2, -0.7), vec3(-2.0, 0.1, 4.0), Vec3::ZERO] {
+            assert!((b.to_world(b.to_local(p)) - p).length() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn bodies_face_each_other() {
+        let s = two(Class::Warrior, Class::Warrior);
+        let f0 = s.bodies[0].to_world(vec3(0.0, 0.0, 1.0)) - s.bodies[0].to_world(Vec3::ZERO);
+        let f1 = s.bodies[1].to_world(vec3(0.0, 0.0, 1.0)) - s.bodies[1].to_world(Vec3::ZERO);
+        assert!(f0.x > 0.9 && f1.x < -0.9, "{f0:?} {f1:?}");
+        assert!(s.bodies[0].pos.x < 0.0 && s.bodies[1].pos.x > 0.0);
+        assert!(((s.bodies[1].pos.x - s.bodies[0].pos.x) - 3.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn root_steps_toward_opponent_and_fall_lies_down() {
+        let mut s = two(Class::Warrior, Class::Warrior);
+        s.bodies[0].pose.root = vec3(0.0, 0.0, 1.0);
+        let feet = s.bodies[0].to_world(Vec3::ZERO);
+        assert!((feet.x - (s.bodies[0].pos.x + 1.0)).abs() < 1e-4);
+        s.bodies[0].pose.root = Vec3::ZERO;
+        s.bodies[0].pose.fall = 1.0;
+        let head = s.bodies[0].to_world(vec3(0.0, 1.7, 0.0));
+        assert!(head.y - s.bodies[0].pos.y < 0.4, "head near the ground when fallen: {head:?}");
+    }
+
+    #[test]
+    fn sdf_hits_both_bodies_and_skips_dimmed() {
+        let mut s = two(Class::Warrior, Class::Warrior);
+        let chest = |s: &Scene, i: usize| s.bodies[i].to_world(vec3(0.0, 1.18, 0.0));
+        for i in 0..2 {
+            let (d, id, _) = s.sdf(chest(&s, i));
+            assert!(d < 0.0 && Scene::owner(id) == Some(i));
+        }
+        s.bodies[1].dim = 1.0;
+        let (_, id, _) = s.sdf(chest(&s, 1));
+        assert_ne!(Scene::owner(id), Some(1));
     }
 }

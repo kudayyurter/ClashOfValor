@@ -8,12 +8,14 @@
 //!   4. Draw: glow halos, coarse glyphs, fine glyphs, free-floating ember glyphs, UI.
 
 mod ascii;
+mod models;
 mod rules;
 mod scene;
 
 use ascii::{Cam, CellOut, Opts, Pass, sample_cell};
 use macroquad::prelude::*;
 use rayon::prelude::*;
+use rules::Class;
 use scene::{METALS, Scene};
 
 const BG: Color = Color::new(0.035, 0.035, 0.07, 1.0);
@@ -37,11 +39,10 @@ struct Args {
     yaw: f32,
     dist: f32,
     metal: usize,
-    walk: bool,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { shot: None, yaw: 25.0, dist: 5.5, metal: 0, walk: false };
+    let mut a = Args { shot: None, yaw: 0.0, dist: 7.0, metal: 0 };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -49,7 +50,6 @@ fn parse_args() -> Args {
             "--yaw" => a.yaw = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.yaw),
             "--dist" => a.dist = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.dist),
             "--metal" => a.metal = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-            "--walk" => a.walk = true,
             _ => {}
         }
     }
@@ -97,18 +97,22 @@ async fn main() {
     let args = parse_args();
     let font = load_ttf_font_from_bytes(include_bytes!("../assets/mono.ttf")).expect("font");
     let mut scene = Scene::new();
-    scene.metal = args.metal % METALS.len();
-    let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.42f32, args.dist);
+    scene.set_fighters([Class::Warrior, Class::Warrior]);
+    for b in &mut scene.bodies {
+        b.metal = args.metal % METALS.len();
+    }
+    // The fighter whose turn it is; M/N change their metal.
+    let active = 0usize;
+    let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
     let mut opts = Opts { edges: true, fine: true };
     let mut embers: Vec<Ember> = Vec::new();
     let mut last_mouse: Vec2 = mouse_position().into();
     let mut frame = 0u32;
     if args.shot.is_some() {
-        // Warm up the walk cycle and the ember stream before the capture.
-        let fwd = vec3(-cam_yaw.sin(), 0.0, -cam_yaw.cos());
+        // Warm up the ember stream before the capture.
         for _ in 0..90 {
-            scene.update(1.0 / 60.0, if args.walk { fwd } else { Vec3::ZERO });
+            scene.update(1.0 / 60.0);
             update_embers(&mut embers, &scene, 1.0 / 60.0);
         }
     }
@@ -128,13 +132,15 @@ async fn main() {
         last_mouse = m;
         let wheel = mouse_wheel().1;
         if wheel != 0.0 {
-            cam_dist = (cam_dist * if wheel > 0.0 { 0.9 } else { 1.1 }).clamp(2.5, 14.0);
+            cam_dist = (cam_dist * if wheel > 0.0 { 0.9 } else { 1.1 }).clamp(3.0, 16.0);
         }
         if is_key_pressed(KeyCode::M) {
-            scene.metal = (scene.metal + 1) % METALS.len();
+            let b = &mut scene.bodies[active];
+            b.metal = (b.metal + 1) % METALS.len();
         }
         if is_key_pressed(KeyCode::N) {
-            scene.metal = (scene.metal + METALS.len() - 1) % METALS.len();
+            let b = &mut scene.bodies[active];
+            b.metal = (b.metal + METALS.len() - 1) % METALS.len();
         }
         if is_key_pressed(KeyCode::E) {
             opts.edges = !opts.edges;
@@ -151,26 +157,11 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             break;
         }
-        let fwd = vec3(-cam_yaw.sin(), 0.0, -cam_yaw.cos());
-        let right = vec3(-fwd.z, 0.0, fwd.x);
-        let mut mv = Vec3::ZERO;
-        if is_key_down(KeyCode::W) || args.walk {
-            mv += fwd;
-        }
-        if is_key_down(KeyCode::S) {
-            mv -= fwd;
-        }
-        if is_key_down(KeyCode::D) {
-            mv += right;
-        }
-        if is_key_down(KeyCode::A) {
-            mv -= right;
-        }
-        scene.update(dt, mv);
+        scene.update(dt);
         update_embers(&mut embers, &scene, dt);
 
         // ---- camera and grid ---------------------------------------------------
-        let target = scene.player + vec3(0.0, 1.0, 0.0);
+        let target = (scene.bodies[0].pos + scene.bodies[1].pos) * 0.5 + vec3(0.0, 1.0, 0.0);
         let eye = target + vec3(cam_pitch.cos() * cam_yaw.sin(), cam_pitch.sin(), cam_pitch.cos() * cam_yaw.cos()) * cam_dist;
         let (sw, sh) = (screen_width(), screen_height());
         let cam = Cam::look_at(eye, target, 50.0, sw, sh);
@@ -269,10 +260,14 @@ async fn main() {
             draw_glyph(&font, g, sp.x - size as f32 * 0.3, sp.y + size as f32 * 0.35, size, col);
         }
 
-        // Name tag over the hero.
-        if let Some((sp, _)) = cam.project(scene.player + vec3(0.0, 2.05, 0.0)) {
-            let w = measure_text("you", Some(&font), 14, 1.0).width;
-            draw_text_ex("you", sp.x - w * 0.5, sp.y, TextParams { font: Some(&font), font_size: 14, color: WHITE, ..Default::default() });
+        // Name tag over each fighter, in their accent colour.
+        for (i, b) in scene.bodies.iter().enumerate() {
+            let name = ["Player 1", "Player 2"][i];
+            if let Some((sp, _)) = cam.project(b.to_world(b.anchors.head + vec3(0.0, 0.5, 0.0))) {
+                let w = measure_text(name, Some(&font), 14, 1.0).width;
+                let c = Color::new(b.accent.x, b.accent.y, b.accent.z, 1.0);
+                draw_text_ex(name, sp.x - w * 0.5, sp.y, TextParams { font: Some(&font), font_size: 14, color: c, ..Default::default() });
+            }
         }
 
         draw_ui(&font, &scene, &opts, fs, cols, rows, deferred.len(), render_ms);
@@ -316,13 +311,13 @@ fn draw_ui(font: &Font, scene: &Scene, opts: &Opts, fs: u16, cols: usize, rows: 
         let label = format!("{g} {}", m.name);
         let w = measure_text(&label, Some(font), 13, 1.0).width + 12.0;
         let c = Color::new(m.rgb.x, m.rgb.y, m.rgb.z, 1.0);
-        if i == scene.metal {
+        if i == scene.bodies[0].metal {
             draw_rectangle_lines(x - 2.0, bar_y + 19.0, w, 20.0, 1.0, c);
         }
-        draw_text_ex(&label, x + 4.0, bar_y + 33.0, tp(if i == scene.metal { c } else { dim }));
+        draw_text_ex(&label, x + 4.0, bar_y + 33.0, tp(if i == scene.bodies[0].metal { c } else { dim }));
         x += w + 6.0;
     }
-    let help = "WASD move  RMB drag turn  wheel zoom  M/N metal  L legs  E edges  F fine grid  G glyph size  Esc quit";
+    let help = "RMB drag turn  wheel zoom  M/N metal  L legs  E edges  F fine grid  G glyph size  Esc quit";
     let w = measure_text(help, Some(font), 13, 1.0).width;
     draw_text_ex(help, sw - w - 8.0, bar_y + 14.0, tp(dim));
 }
