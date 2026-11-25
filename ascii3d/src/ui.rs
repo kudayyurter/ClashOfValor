@@ -368,6 +368,54 @@ pub fn draw_popup(font: &Font, popup: &crate::flow::Popup) {
     }
 }
 
+/// Three rows of block-glyph lettering (`█▀▄`) for titles and banners. Each letter is
+/// 3 columns wide with a 1-column gap; unknown characters become spaces.
+pub fn block_text(s: &str) -> [String; 3] {
+    fn glyph(c: char) -> [&'static str; 3] {
+        match c {
+            'A' => ["▄▀▄", "█▀█", "▀ ▀"],
+            'B' => ["█▀▄", "█▀▄", "▀▀ "],
+            'C' => ["▄▀▀", "█  ", " ▀▀"],
+            'D' => ["█▀▄", "█ █", "▀▀ "],
+            'E' => ["█▀▀", "█▀ ", "▀▀▀"],
+            'F' => ["█▀▀", "█▀ ", "▀  "],
+            'G' => ["▄▀▀", "█ ▄", " ▀▀"],
+            'H' => ["█ █", "█▀█", "▀ ▀"],
+            'I' => ["▀█▀", " █ ", "▀▀▀"],
+            'J' => ["  █", "  █", "▀▀ "],
+            'K' => ["█ █", "█▀▄", "▀ ▀"],
+            'L' => ["█  ", "█  ", "▀▀▀"],
+            'M' => ["█▄█", "█ █", "▀ ▀"],
+            'N' => ["█▀█", "█ █", "▀ ▀"],
+            'O' => ["▄▀▄", "█ █", " ▀ "],
+            'P' => ["█▀▄", "█▀ ", "▀  "],
+            'Q' => ["▄▀▄", "█ █", " ▀▄"],
+            'R' => ["█▀▄", "█▀▄", "▀ ▀"],
+            'S' => ["▄▀▀", " ▀▄", "▀▀ "],
+            'T' => ["▀█▀", " █ ", " ▀ "],
+            'U' => ["█ █", "█ █", " ▀ "],
+            'V' => ["█ █", "▀▄▀", " ▀ "],
+            'W' => ["█ █", "█▄█", "▀ ▀"],
+            'X' => ["▀▄▀", " █ ", "▀ ▀"],
+            'Y' => ["█ █", " █ ", " ▀ "],
+            'Z' => ["▀▀█", "▄▀ ", "▀▀▀"],
+            '!' => [" █ ", " █ ", " ▄ "],
+            _ => ["   ", "   ", "   "],
+        }
+    }
+    let mut rows = [String::new(), String::new(), String::new()];
+    for (i, c) in s.chars().enumerate() {
+        let g = glyph(c.to_ascii_uppercase());
+        for r in 0..3 {
+            if i > 0 {
+                rows[r].push(' ');
+            }
+            rows[r].push_str(g[r]);
+        }
+    }
+    rows
+}
+
 /// Shown instead of the game when the window is too small to lay out.
 pub fn draw_too_small(font: &Font) {
     let (sw, sh) = (screen_width(), screen_height());
@@ -464,20 +512,62 @@ pub fn draw_caption(font: &Font, lines: &[String], bottom: f32) {
     }
 }
 
-pub fn draw_banner(font: &Font, text: &str, color: Vec3) {
+/// Result banner: the text between block-glyph bands in the winner's colour, then the
+/// score and stats lines underneath. Everything is fitted to the window.
+pub fn draw_banner(font: &Font, text: &str, color: Vec3, lines: &[String]) {
     let (sw, sh) = (screen_width(), screen_height());
-    let size = 40;
-    let w = text_w(font, text, size);
-    let y = sh * 0.36;
-    draw_rectangle(sw * 0.5 - w * 0.5 - 24.0, y - 40.0, w + 48.0, 58.0, PANEL_BG);
-    draw_frame(font, sw * 0.5 - w * 0.5 - 28.0, y - 46.0, w + 56.0, 66.0, rgb(color));
-    text_centered(font, text, sw * 0.5, y, size, rgb(color));
+    let size = 38;
+    let text = fit(text, chars_in(font, sw - 80.0, size));
+    let w = text_w(font, &text, size).max(lines.iter().map(|l| text_w(font, l, 14)).fold(0.0, f32::max)) + 48.0;
+    let w = w.min(sw - 24.0);
+    let x = sw * 0.5 - w * 0.5;
+    let y = sh * 0.3;
+    let h = 92.0 + lines.len() as f32 * 19.0;
+    draw_rectangle(x, y - 46.0, w, h, Color::new(0.02, 0.02, 0.05, 0.92));
+    let c = rgb(color);
+    let band = |ch: &str, yy: f32| {
+        let n = chars_in(font, w, 14);
+        text_centered(font, &ch.repeat(n), sw * 0.5, yy, 14, c);
+    };
+    band("▄", y - 32.0);
+    text_centered(font, &text, sw * 0.5, y + 6.0, size, c);
+    band("▀", y + 26.0);
+    for (i, l) in lines.iter().enumerate() {
+        text_centered(font, &fit(l, chars_in(font, w - 20.0, 14)), sw * 0.5, y + 48.0 + i as f32 * 19.0, 14, if i == 0 { TEXT } else { DIM });
+    }
+}
+
+/// Rows of block-glyph text, centred on `cx`, starting at `top`.
+pub fn draw_block(font: &Font, rows: &[String; 3], cx: f32, top: f32, size: u16, color: Color) {
+    // Step rows by the glyph's own height so the half-blocks join into solid letters.
+    let m = measure_text("█", Some(font), size, 1.0);
+    let step = m.height.max(1.0);
+    for (r, row) in rows.iter().enumerate() {
+        text_centered(font, row, cx, top + m.offset_y + r as f32 * step, size, color);
+    }
+}
+
+/// The game's title in block letters.
+pub fn draw_title(font: &Font, cx: f32, top: f32) {
+    let rows = block_text("CLASH OF VALOR");
+    let size = if screen_width() < 900.0 { 14 } else { 20 };
+    draw_block(font, &rows, cx + 2.0, top + 2.0, size, Color::new(0.25, 0.12, 0.02, 0.9));
+    draw_block(font, &rows, cx, top, size, Color::new(1.0, 0.78, 0.32, 1.0));
 }
 
 /// "Player N, enter your name" with the text field, centred at `y`.
+/// A backed, framed plate for setup prompts.
+pub fn draw_prompt_plate(font: &Font, title: &str, color: Vec3, y: f32, h: f32) {
+    let cx = screen_width() * 0.5;
+    let w = (text_w(font, title, FONT) + 60.0).max(text_w(font, &"M".repeat(NAME_MAX + 1), FONT) + 50.0);
+    draw_rectangle(cx - w * 0.5, y - 22.0, w, h, PANEL_BG);
+    draw_frame(font, cx - w * 0.5, y - 26.0, w, h + 4.0, Color::new(color.x, color.y, color.z, 0.8));
+    text_centered(font, title, cx, y, FONT, rgb(color));
+}
+
 pub fn draw_name_prompt(font: &Font, title: &str, field: &NameField, color: Vec3, y: f32, cursor: bool) {
     let cx = screen_width() * 0.5;
-    text_centered(font, title, cx, y, FONT, rgb(color));
+    draw_prompt_plate(font, title, color, y, 66.0);
     let w = text_w(font, &"M".repeat(NAME_MAX + 1), FONT) + 16.0;
     draw_rectangle(cx - w * 0.5, y + 10.0, w, ROW + 4.0, PANEL_BG);
     draw_rectangle_lines(cx - w * 0.5, y + 10.0, w, ROW + 4.0, 1.0, DIM);
@@ -620,5 +710,21 @@ mod tests {
         assert!(m.flash > 0.0 && m.flash_row == 1);
         m.tick(0.5);
         assert_eq!(m.flash, 0.0);
+    }
+
+    #[test]
+    fn block_text_rows_equal_width() {
+        let rows = block_text("CLASH OF VALOR");
+        let w = 4 * "CLASH OF VALOR".chars().count() - 1;
+        for r in &rows {
+            assert_eq!(r.chars().count(), w, "{r:?}");
+        }
+    }
+
+    #[test]
+    fn block_text_known_letter() {
+        assert_eq!(block_text("A"), ["▄▀▄".to_string(), "█▀█".to_string(), "▀ ▀".to_string()]);
+        assert_eq!(block_text("a"), block_text("A"), "lowercase maps to capitals");
+        assert_eq!(block_text("?")[0], "   ");
     }
 }

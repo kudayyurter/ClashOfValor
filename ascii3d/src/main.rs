@@ -66,6 +66,7 @@ struct Args {
     moves: Vec<u8>,
     keys: String,
     at: Option<f32>,
+    ff: Option<i32>,
     noedges: bool,
 }
 
@@ -74,7 +75,7 @@ fn parse_class(s: &str) -> Option<Class> {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), at: None, noedges: false };
+    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), at: None, ff: None, noedges: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -95,6 +96,7 @@ fn parse_args() -> Args {
             "--moves" => a.moves = it.next().unwrap_or_default().split(',').filter_map(|m| m.trim().parse().ok()).collect(),
             "--keys" => a.keys = it.next().unwrap_or_default(),
             "--at" => a.at = it.next().and_then(|v| v.parse().ok()),
+            "--ff" => a.ff = it.next().and_then(|v| v.parse().ok()),
             "--metal" => a.metal = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             _ => {}
         }
@@ -282,6 +284,10 @@ async fn main() {
         for _ in 0..90 {
             world.tick(&mut flow, STEP, false);
         }
+    }
+    // `--ff N`: pretend both fighters already used N turns (to reach the time limit).
+    if let (Some(n), Some(d)) = (args.ff, flow.duel.as_mut()) {
+        d.moves = [n, n];
     }
     // Scripted moves play out fully, except that `--at` freezes the last one part-way.
     for (n, &m) in args.moves.iter().enumerate() {
@@ -585,6 +591,10 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
     let (sw, sh) = (screen_width(), screen_height());
     let cx = sw * 0.5;
     let menu_bottom = sh - 22.0;
+    if matches!(flow.screen, Screen::Result { .. }) {
+        // Dim the scene behind the result.
+        draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.45));
+    }
     if let (Some(shown), Some(bars)) = (&flow.shown, bars) {
         let active = flow.active();
         let views = [0, 1].map(|i| ui::PanelView {
@@ -598,16 +608,18 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
     }
     match &flow.screen {
         Screen::Setup { stage, who, field, menu, .. } => {
+            ui::draw_title(font, cx, 34.0);
             let accent = ACCENTS[*who];
-            let y = sh * 0.6;
+            // Menus sit at the bottom like the move menu, so the 3D preview stays clear.
+            let top = menu_bottom - ui::menu_height(menu);
             match stage {
                 SetupStage::Name => {
                     let title = format!("Player {}, enter your name", who + 1);
-                    ui::draw_name_prompt(font, &title, field, accent, y, (frame / 30).is_multiple_of(2));
+                    ui::draw_name_prompt(font, &title, field, accent, sh * 0.72, (frame / 30).is_multiple_of(2));
                 }
                 SetupStage::Mode => {
-                    ui::text_centered(font, "Choose a mode", cx, y, ui::FONT, ui::TEXT);
-                    ui::draw_menu(font, menu, cx, y + 14.0);
+                    ui::draw_menu_header(font, "Choose a mode", Vec3::new(0.9, 0.7, 0.3), cx, top - 16.0);
+                    ui::draw_menu(font, menu, cx, top);
                 }
                 SetupStage::Class => {
                     let title = if flow.mode == flow::Mode::Bot && *who == 1 {
@@ -615,8 +627,8 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
                     } else {
                         format!("{}, choose your class", flow.names()[*who])
                     };
-                    ui::text_centered(font, &title, cx, y, ui::FONT, ui::rgb(accent));
-                    ui::draw_menu(font, menu, cx, y + 14.0);
+                    ui::draw_menu_header(font, &title, accent, cx, top - 16.0);
+                    ui::draw_menu(font, menu, cx, top);
                 }
             }
         }
@@ -635,8 +647,14 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
             let top = menu_bottom - ui::menu_height(menu);
             ui::draw_caption(font, &flow.caption, top - 10.0);
             ui::draw_menu(font, menu, cx, top);
-            if let Some((text, who)) = flow.banner() {
-                ui::draw_banner(font, &text, who.map_or(Vec3::splat(0.75), |w| scene.bodies[w].accent));
+            if let (Some((text, who)), Some(d)) = (flow.banner(), &flow.duel) {
+                let (a, b) = (&d.f[0].name, &d.f[1].name);
+                let lines = vec![
+                    format!("Score  {a} {} – {} {b}", flow.score[0], flow.score[1]),
+                    format!("{} turns · {a} dealt {} · {b} dealt {}", d.moves[0] + d.moves[1], d.dealt[0], d.dealt[1]),
+                    format!("{} moves first next", d.f[1 - d.first].name),
+                ];
+                ui::draw_banner(font, &text, who.map_or(Vec3::splat(0.75), |w| scene.bodies[w].accent), &lines);
             }
         }
     }
