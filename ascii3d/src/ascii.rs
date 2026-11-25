@@ -196,6 +196,9 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
 /// Where the decorative moon hangs: behind the fighters, centred between the status panels.
 pub const MOON: Vec3 = Vec3::new(-0.02, 0.193, -0.981);
 
+/// Angular size of a star patch (radians).
+pub const STAR_PATCH: f32 = 0.05;
+
 /// Glyph for a ray that hits nothing: hills on the horizon, the moon, or stars.
 /// `None` leaves the cell empty.
 pub fn sky_glyph(dir: Vec3, time: f32) -> Option<(char, Vec3)> {
@@ -206,7 +209,8 @@ pub fn sky_glyph(dir: Vec3, time: f32) -> Option<(char, Vec3)> {
     let ridge = |a: f32| 0.016 + 0.01 * ((a * 7.0).sin() + 0.6 * (a * 17.0 + 1.3).sin() + 0.3 * (a * 41.0).sin()) / 1.9;
     let r = ridge(az);
     if el < r {
-        let col = (az * 400.0).floor() as i32;
+        // Texture patches at least a glyph wide, so they don't reshuffle as the view turns.
+        let col = (az * 80.0).floor() as i32;
         if el > r - 0.007 {
             // A ragged treeline along the crest.
             let h = hash2(col, 17);
@@ -226,25 +230,33 @@ pub fn sky_glyph(dir: Vec3, time: f32) -> Option<(char, Vec3)> {
             return Some((g, vec3(0.1, 0.12, 0.2)));
         }
         // Sparse texture on the hillside; mostly a dark silhouette against the stars.
-        let h = hash2(col, (el * 400.0).floor() as i32);
+        let h = hash2(col, (el * 80.0).floor() as i32);
         return Some((if h > 0.88 { '.' } else { ' ' }, vec3(0.07, 0.08, 0.14)));
     }
     let a = dir.angle_between(MOON.normalize());
     if a < 0.035 {
-        let g = if a < 0.017 { '●' } else if a < 0.028 { 'O' } else { 'o' };
+        let g = if a < 0.024 { '●' } else { '○' };
         return Some((g, vec3(0.95, 0.95, 0.82)));
     }
     if a < 0.08 {
-        let h = hash2((az * 300.0).floor() as i32, (el * 300.0).floor() as i32 + 5);
+        let h = hash2((az * 80.0).floor() as i32, (el * 80.0).floor() as i32 + 5);
         return (h > 0.55).then_some(('.', vec3(0.5, 0.52, 0.5) * (1.0 - (a - 0.035) / 0.045)));
     }
     if el < r + 0.012 {
         return None;
     }
-    // Stars: a sparse hash on the world direction, so they hold still as the camera turns.
-    let (ci, cj) = ((az / 0.012).floor() as i32, (el / 0.012).floor() as i32);
+    // Stars: some patches of sky hold one star at a hashed point; a ray only lights it
+    // when it passes close to that point, so each star fills about one glyph and holds
+    // still as the camera turns.
+    let (ci, cj) = ((az / STAR_PATCH).floor() as i32, (el / STAR_PATCH).floor() as i32);
     let h = hash2(ci + 31, cj - 77);
-    if h < 0.98 {
+    if h < 0.7 {
+        return None;
+    }
+    let (ox, oy) = (hash2(ci - 5, cj + 9) - 0.5, hash2(ci + 13, cj - 3) - 0.5);
+    let sx = (ci as f32 + 0.5 + ox * 0.6) * STAR_PATCH;
+    let sy = (cj as f32 + 0.5 + oy * 0.6) * STAR_PATCH;
+    if (az - sx).hypot(el - sy) > 0.0055 {
         return None;
     }
     let k = hash2(ci, cj);
@@ -298,13 +310,13 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
             let g = if h > 0.89 && l > 0.08 {
                 ['/', '\\', '_'][((h - 0.89) * 27.0) as usize % 3]
             } else {
-                ramp(&['.', ':', '-', '=', '#', '░'], l * 1.8)
+                ramp(&['.', ':', ';', '=', '░'], l * 1.8)
             };
             (g, sh.rgb)
         }
         Mat::Leaf => {
             let h = hash2((sh.p.x * 9.0).floor() as i32, (sh.p.y * 9.0 + sh.p.z * 5.0).floor() as i32);
-            let g = if h > 0.9 { if h > 0.95 { '"' } else { '\'' } } else { ramp(&['.', ',', ';', '*', '%', '&'], l * 2.2) };
+            let g = if h > 0.9 { if h > 0.95 { '"' } else { '\'' } } else { ramp(&['.', ',', ';', '░', '▒'], l * 2.2) };
             (g, sh.rgb)
         }
         Mat::Wood => (ramp(&['.', ':', ')', '|', ']'], l * 2.5), sh.rgb),
@@ -349,6 +361,12 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
     }
 }
 
+/// A grass flower for hash `h`, or `None`: rare, small and warm, so it can't be
+/// mistaken for a star.
+pub fn flower_glyph(h: f32) -> Option<(char, Vec3)> {
+    (h > 0.994).then(|| (if h > 0.997 { '°' } else { '·' }, vec3(1.0, 0.72, 0.45)))
+}
+
 /// Chance that a grass cell far from the duel still draws a blade.
 pub fn grass_keep(dist: f32) -> f32 {
     let f = ((dist - 3.0) / 9.0).clamp(0.0, 1.0);
@@ -387,14 +405,18 @@ fn grass_glyph(scene: &Scene, cam: &Cam, sh: &Shade) -> (char, Vec3) {
         _ => Vec3::ZERO,
     };
     let dist = vec3(p.x - centre.x, 0.0, p.z - centre.z).length();
-    let light = grass_light(dist);
+    // Overall calmer than the fighters, and darker still in the rows nearest the camera.
+    let near = {
+        let f = (((p - cam.pos).length() - 2.5) / 3.5).clamp(0.0, 1.0);
+        0.55 + 0.45 * f * f * (3.0 - 2.0 * f)
+    };
+    let light = grass_light(dist) * 0.7 * near;
     let h2 = hash2((p.x * 20.0).floor() as i32 + 7919, (p.z * 20.0).floor() as i32 - 104_729);
     if h2 > grass_keep(dist) {
         return (if h2 > 0.985 || h < 0.35 { '.' } else { ' ' }, sh.rgb * light * 0.8);
     }
-    if h > 0.985 {
-        let flower = vec3(0.6, 0.75, 1.0) * (sh.lum * 2.5).min(1.0) * light;
-        return (if h > 0.993 { 'o' } else { '*' }, flower);
+    if let Some((g, c)) = flower_glyph(h) {
+        return (g, c * (sh.lum * 2.5).min(1.0) * light);
     }
     let g = if h < 0.06 {
         '.'
@@ -427,11 +449,11 @@ fn chain_glyph(scene: &Scene, hit: &Hit, sh: &Shade) -> (char, Vec3) {
     let k = ((row + col) as i32).rem_euclid(2) as usize;
     let l = sh.lum;
     let g = if l > 0.38 {
-        ['S', '8'][k]
+        ['▒', '░'][k]
     } else if l > 0.18 {
-        ['3', 'S'][k]
+        ['░', 'o'][k]
     } else if l > 0.05 {
-        ['(', 'c'][k]
+        ['·', '°'][k]
     } else {
         ':'
     };
@@ -642,5 +664,37 @@ mod tests {
         }
         let f = lit as f32 / total as f32;
         assert!((0.005..0.05).contains(&f), "star fraction {f}");
+    }
+
+    #[test]
+    fn flowers_rare_and_warm() {
+        assert!(flower_glyph(0.99).is_none());
+        assert!(flower_glyph(0.994).is_none());
+        let (_, c) = flower_glyph(0.999).expect("flower");
+        assert!(c.x > c.z, "warm: {c}");
+    }
+
+    #[test]
+    fn stars_one_cell_per_patch() {
+        // Find a patch with a star, then check the star covers a small spot of it.
+        let dir = |az: f32, el: f32| vec3(el.cos() * az.cos(), el.sin(), el.cos() * az.sin());
+        let mut checked = 0;
+        for pi in 0..400 {
+            let (az0, el0) = (pi as f32 * STAR_PATCH, 0.6 + (pi % 7) as f32 * STAR_PATCH);
+            let mut lit = 0;
+            let n = 40;
+            for i in 0..n {
+                for j in 0..n {
+                    let (az, el) = (az0 + (i as f32 + 0.5) / n as f32 * STAR_PATCH, el0 + (j as f32 + 0.5) / n as f32 * STAR_PATCH);
+                    lit += sky_glyph(dir(az, el), 0.0).is_some() as u32;
+                }
+            }
+            if lit > 0 {
+                let frac = lit as f32 / (n * n) as f32;
+                assert!(frac < 1.0 / 9.0, "a star covers {frac} of its patch");
+                checked += 1;
+            }
+        }
+        assert!(checked > 5, "found {checked} star patches");
     }
 }
