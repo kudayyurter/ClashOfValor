@@ -96,7 +96,7 @@ fn warrior(pose: &Pose, id_base: u16, chain_legs: bool) -> (Vec<Part>, Anchors) 
     k.add(Mat::Chain, Shape::Capsule { a: vec3(0.0, 1.47, 0.0) + up, b: vec3(0.0, 1.53, 0.0) + up, r: 0.17 });
     k.add(Mat::Cloth, Shape::RBox { c: vec3(0.0, 1.1, -0.17) + up, half: vec3(0.22, 0.4, 0.02), round: 0.01 });
     let dir = (tip - hand_r).normalize();
-    k.add(Mat::Blade, Shape::Capsule { a: hand_r + dir * 0.1, b: tip, r: 0.028 });
+    k.add(Mat::Blade, Shape::Capsule { a: hand_r + dir * 0.1, b: tip, r: 0.042 });
     k.add(Mat::Plate, Shape::Capsule { a: hand_r + dir * 0.08 + vec3(0.11, 0.0, 0.0), b: hand_r + dir * 0.08 - vec3(0.11, 0.0, 0.0), r: 0.02 });
     // Front of the surcoat and a helmet plume, both in the player's accent.
     k.add(Mat::Cloth, Shape::RBox { c: vec3(0.0, 0.95, 0.13) + up, half: vec3(0.16, 0.2, 0.015), round: 0.01 });
@@ -164,9 +164,9 @@ fn assassin(pose: &Pose, id_base: u16) -> (Vec<Part>, Anchors) {
     k.add(Mat::Cloak, Shape::Sphere { c: vec3(0.0, 1.46, 0.0) + body, r: 0.135 });
     k.add(Mat::Cloak, Shape::Cone { a: vec3(0.0, 1.5, -0.04) + body, b: vec3(0.0, 1.64, -0.18) + body, ra: 0.1, rb: 0.01 });
     let (a, tip) = blade(hand_r);
-    k.add(Mat::Blade, Shape::Capsule { a, b: tip, r: 0.02 });
+    k.add(Mat::Blade, Shape::Capsule { a, b: tip, r: 0.03 });
     let (a2, b2) = blade(hand_l);
-    k.add(Mat::Blade, Shape::Capsule { a: a2, b: b2, r: 0.02 });
+    k.add(Mat::Blade, Shape::Capsule { a: a2, b: b2, r: 0.03 });
     let chest = vec3(0.0, 1.1, 0.11) + body;
     let anchors = Anchors { weapon_tip: tip, hand_r, chest, head: vec3(0.0, 1.46, 0.0) + body, focus: chest };
     (k.parts, anchors)

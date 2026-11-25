@@ -219,15 +219,16 @@ impl Fx {
         let steel = vec3(0.85, 0.9, 1.0);
 
         match a.res.mv {
-            Move::Attack if me.class == Class::Assassin => {
-                if window(p0, p1, 0.4, 0.5) {
-                    self.trail(tip, tip_dir, steel);
-                }
-            }
-            Move::Attack => {
-                if window(p0, p1, 0.3, 0.6) {
-                    self.trail(tip, tip_dir, steel);
-                    self.trail((tip + world(me, me.anchors.hand_r)) * 0.5, tip_dir, steel * 0.8);
+            // Slash arcs: samples along the blade each frame, white at the tip fading to
+            // the player's colour toward the hand. Nothing spawns while the hit-stop holds.
+            Move::Attack if a.hold <= 0.0 => {
+                let (from, to) = if me.class == Class::Assassin { (0.4, 0.5) } else { (0.3, 0.6) };
+                if window(p0, p1, from, to) {
+                    let hand = world(me, me.anchors.hand_r);
+                    for k in 0..4 {
+                        let t = 0.4 + 0.2 * k as f32;
+                        self.trail(hand.lerp(tip, t), tip_dir, me.accent.lerp(steel * 1.2, t));
+                    }
                 }
             }
             Move::CritAttack => {
@@ -404,7 +405,7 @@ pub fn draw(fx: &Fx, cam: &Cam, depth_at: &dyn Fn(f32, f32) -> f32, font: &Font,
             let ch = fs as f32 * 1.2;
             draw_circle(sp.x, sp.y, ch * 0.8, Color::new(rgb.x, rgb.y * 0.6, rgb.z * 0.4, 0.07 * fade));
         }
-        let size = ((fs as f32) * 5.0 / depth).clamp(6.0, 28.0) as u16;
+        let size = if p.kind == Kind::Trail { fs } else { ((fs as f32) * 5.0 / depth).clamp(6.0, 28.0) as u16 };
         glyph(font, g, sp.x - size as f32 * 0.3, sp.y + size as f32 * 0.35, size, Color::new(rgb.x, rgb.y, rgb.z, alpha));
     }
     for t in &fx.texts {
@@ -588,5 +589,42 @@ mod tests {
         assert_eq!(shake_strength(&res(Move::FireOrb, vec![hit(14, 0, false)])), Some(0.03), "fully blocked");
         assert_eq!(shake_strength(&res(Move::CritAttack, vec![hit(15, 0, true)])), Some(0.03));
         assert_eq!(shake_strength(&res(Move::Rest, vec![Event::Rested { who: 0, hp: 0, stamina: 25, mana: 0 }])), None);
+    }
+
+    fn warrior_scene() -> Scene {
+        let mut s = Scene::new();
+        s.set_fighters([Class::Warrior, Class::Sorcerer]);
+        s.update(0.016);
+        s
+    }
+
+    #[test]
+    fn no_trail_during_hold() {
+        let s = warrior_scene();
+        let mut fx = Fx::default();
+        let mut a = action(Move::Attack, vec![Event::Hit { target: 1, absorbed: 0, damage: 10, crit: false }]);
+        a.advance(0.55);
+        assert!(a.hold > 0.0);
+        fx.on_action(&a, &s.bodies, 0.016, true);
+        fx.particles.retain(|p| p.kind == Kind::Trail);
+        a.advance(0.02);
+        assert!(a.hold > 0.0);
+        fx.on_action(&a, &s.bodies, 0.02, false);
+        assert!(fx.particles.iter().all(|p| p.kind != Kind::Trail) || fx.particles.is_empty(), "no new trail while frozen");
+        assert_eq!(fx.particles.iter().filter(|p| p.kind == Kind::Trail).count(), 0);
+    }
+
+    #[test]
+    fn trail_samples_along_blade() {
+        let s = warrior_scene();
+        let mut fx = Fx::default();
+        let mut a = action(Move::Attack, vec![]);
+        a.advance(0.45);
+        fx.on_action(&a, &s.bodies, 0.016, false);
+        let before = fx.particles.iter().filter(|p| p.kind == Kind::Trail).count();
+        a.advance(0.016);
+        fx.on_action(&a, &s.bodies, 0.016, false);
+        let added = fx.particles.iter().filter(|p| p.kind == Kind::Trail).count() - before;
+        assert!(added >= 3, "{added} trail glyphs in one frame");
     }
 }

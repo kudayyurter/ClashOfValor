@@ -186,6 +186,7 @@ pub fn sample_cell(scene: &Scene, cam: &Cam, x0: f32, y0: f32, cw: f32, ch: f32,
         Mat::Fire | Mat::Orb => 1.0,
         Mat::Crystal => 0.3,
         Mat::Blade if matches!(METALS[body.map_or(0, |b| b.metal)].name, "Moonsteel" | "Emberstone") => 0.5,
+        Mat::Blade => 0.3,
         _ => 0.0,
     };
     let fade = 1.0 - body.map_or(0.0, |b| b.dim);
@@ -311,7 +312,13 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
             let h = hash2((sh.p.y * 9.0 + scene.time * 10.0) as i32, (sh.p.x * 9.0 + sh.p.z * 7.0) as i32);
             (ramp(&['\'', '^', '*', '"', '^'], h), sh.rgb * 1.3)
         }
-        Mat::Plate | Mat::Blade => {
+        Mat::Blade => {
+            // Blades read as solid bright steel, whatever the light.
+            let g = if l > 0.6 { '█' } else if l > 0.3 { '▓' } else { '▒' };
+            let lum = sh.rgb.dot(vec3(0.3, 0.59, 0.11)).max(1e-3);
+            (g, sh.rgb * (0.75 / lum).max(1.0))
+        }
+        Mat::Plate => {
             let metal = Scene::owner(hit.id).and_then(|i| scene.bodies.get(i)).map_or(0, |b| b.metal);
             let [bright, mid, dark] = METALS[metal].glyphs;
             let g = if l > 0.42 {

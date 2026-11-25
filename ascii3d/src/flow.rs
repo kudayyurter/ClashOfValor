@@ -212,7 +212,12 @@ impl Flow {
         let Screen::Animate { action, collapse } = &mut self.screen else { return };
         let dt = if fast { dt * 2.0 } else { dt };
         if !action.done() {
-            if action.advance(dt) {
+            let held = action.hold;
+            let fired = action.advance(dt);
+            // The target's flinch waits out the hit-stop too.
+            let used = if fast { (held - action.hold) / 2.0 } else { held - action.hold };
+            self.since_impact = (self.since_impact - used.max(0.0)).max(0.0);
+            if fired {
                 self.on_impact();
             }
             return;
@@ -1266,5 +1271,18 @@ mod tests {
             Screen::Choose { menu } => assert_eq!(menu.flash, 0.0),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn flinch_frozen_during_hold() {
+        let mut f = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        frames(&mut f, &[Digit(1)]);
+        f.update(0.55);
+        assert!(f.take_impact());
+        let t0 = f.since_impact;
+        f.update(0.03);
+        assert_eq!(f.since_impact, t0, "target's flinch waits out the hit-stop");
+        f.update(0.2);
+        assert!(f.since_impact > t0);
     }
 }
