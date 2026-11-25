@@ -27,7 +27,7 @@ The rules and narration come from the C++ game (`src/rules.rs`), with two change
 Controls:
 - Arrow keys move the highlight, Enter confirms, and number keys pick a menu option directly.
 - Space or Enter skips the move animation.
-- Esc pauses (Resume, How to play, animation speed, New duel, Quit). During setup Esc steps back. No single key quits the game.
+- Esc pauses (Resume, How to play, animation speed, New duel, Quit). During setup Esc steps back. Esc never quits; only the Quit menu items do.
 - Flee asks for confirmation.
 - M/N change the armour metal of the Warrior whose turn it is (or who is choosing).
 - Right-mouse drag orbits the camera. The camera always stays at the same distance; there is no zoom. Between turns it sways gently.

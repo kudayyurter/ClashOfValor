@@ -169,6 +169,14 @@ pub fn hp_color(frac: f32, time: f32) -> Vec3 {
     }
 }
 
+/// Keep a name tag of width `w` inside a window `sw` wide; never panics, even when the
+/// window is narrower than the tag.
+pub fn clamp_tag_x(x: f32, w: f32, sw: f32) -> f32 {
+    let lo = w * 0.5 + 6.0;
+    let hi = (sw - w * 0.5 - 6.0).max(lo);
+    x.clamp(lo, hi)
+}
+
 /// Stamina has no cap: its bar fills against 100.
 pub fn stamina_fill(shown: f32) -> f32 {
     (shown / 100.0).clamp(0.0, 1.0)
@@ -726,5 +734,13 @@ mod tests {
         assert_eq!(block_text("A"), ["▄▀▄".to_string(), "█▀█".to_string(), "▀ ▀".to_string()]);
         assert_eq!(block_text("a"), block_text("A"), "lowercase maps to capitals");
         assert_eq!(block_text("?")[0], "   ");
+    }
+
+    #[test]
+    fn tag_clamp_never_panics() {
+        assert_eq!(clamp_tag_x(-50.0, 100.0, 1280.0), 56.0);
+        assert_eq!(clamp_tag_x(2000.0, 100.0, 1280.0), 1224.0);
+        let x = clamp_tag_x(10.0, 100.0, 60.0);
+        assert!(x.is_finite());
     }
 }

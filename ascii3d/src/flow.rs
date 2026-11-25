@@ -136,6 +136,9 @@ impl Flow {
         self.fast = fast;
         self.rng = rng;
         self.screen = setup_screen(SetupStage::Mode, names);
+        if let Screen::Setup { menu, .. } = &mut self.screen {
+            *menu = mode_menu(mode);
+        }
     }
 
     /// The active fighter's moves, unaffordable ones dimmed with the reason.
@@ -1302,5 +1305,17 @@ mod tests {
         settle(&mut f);
         assert_eq!(f.body_state(0.0, 3.8).1[1], 0.4);
         assert_eq!(f.body_state(0.0, 3.8).1[0], 0.0);
+    }
+
+    #[test]
+    fn new_duel_keeps_bot_mode_selected() {
+        let mut f = Flow::with_duel(["Ann", "Bot"], [Class::Warrior, Class::Sorcerer]);
+        f.mode = Mode::Bot;
+        frames(&mut f, &[Digit(5), Digit(2)]);
+        settle(&mut f);
+        frames(&mut f, &[Digit(2)]);
+        assert_eq!(stage(&f), "setup mode");
+        frames(&mut f, &[Enter]);
+        assert_eq!(f.mode, Mode::Bot, "Enter keeps the mode that was played");
     }
 }

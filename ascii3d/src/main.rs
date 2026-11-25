@@ -118,6 +118,10 @@ impl World {
     fn tick(&mut self, flow: &mut Flow, dt: f32, advance: bool) {
         // Effects first, so an impact fired by a skip this frame is still seen while the
         // move is on screen.
+        // Under a pop-up the whole scene holds still: no new effects, no decay.
+        if flow.popup.is_some() {
+            return;
+        }
         let impact = flow.take_impact();
         // The last move's targets flash white for 0.12 s after its impact. Driven by
         // the flow's impact clock, so a frozen screenshot shows it too.
@@ -525,7 +529,7 @@ async fn main() {
             };
             if let Some((sp, _)) = cam.project(anchor) {
                 let w = measure_text(name, Some(&font), 14, 1.0).width;
-                let sp = vec2(sp.x.clamp(w * 0.5 + 6.0, screen_width() - w * 0.5 - 6.0), sp.y.max(152.0));
+                let sp = vec2(ui::clamp_tag_x(sp.x, w, screen_width()), sp.y.max(152.0));
                 let c = Color::new(b.accent.x, b.accent.y, b.accent.z, 1.0 - b.dim * 0.6);
                 draw_text_ex(name, sp.x - w * 0.5, sp.y, TextParams { font: Some(&font), font_size: 14, color: c, ..Default::default() });
                 if flow.duel.is_some() && i == active && flow.banner().is_none() {
@@ -678,5 +682,35 @@ fn draw_duel_ui(font: &Font, flow: &Flow, scene: &Scene, bars: Option<[[f32; 3];
     }
     if let Some(p) = &flow.popup {
         ui::draw_popup(font, p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn world(flow: &Flow) -> World {
+        let mut w = World { scene: Scene::new(), fx: Fx::default(), shake: Shake::default(), sway: Sway::default(), staged: flow.preview().0 };
+        w.scene.set_fighters(w.staged);
+        w
+    }
+
+    #[test]
+    fn effects_freeze_under_a_pause() {
+        let mut flow = Flow::with_duel(["A", "B"], [Class::Warrior, Class::Sorcerer]);
+        let mut w = world(&flow);
+        flow.step(&[Input::Digit(1)]);
+        for _ in 0..27 {
+            w.tick(&mut flow, 1.0 / 60.0, true);
+        }
+        flow.step(&[Input::Esc]);
+        assert!(flow.popup.is_some());
+        let trails = |w: &World| w.fx.particles.iter().filter(|p| p.kind == Kind::Trail).count();
+        w.tick(&mut flow, 1.0 / 60.0, true);
+        let before = trails(&w);
+        for _ in 0..30 {
+            w.tick(&mut flow, 1.0 / 60.0, true);
+        }
+        assert!(trails(&w) <= before, "trails piled up under the pause: {} -> {}", before, trails(&w));
     }
 }
