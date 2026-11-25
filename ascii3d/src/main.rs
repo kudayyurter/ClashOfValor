@@ -8,6 +8,7 @@
 //!   4. Draw: glow halos, coarse glyphs, fine glyphs, free-floating ember glyphs, UI.
 
 mod ascii;
+mod rules;
 mod scene;
 
 use ascii::{Cam, CellOut, Opts, Pass, sample_cell};
