@@ -17,6 +17,7 @@ mod bot;
 mod effects;
 mod flow;
 mod models;
+mod pixel;
 mod rules;
 mod scene;
 mod ui;
@@ -68,6 +69,7 @@ struct Args {
     at: Option<f32>,
     ff: Option<i32>,
     noedges: bool,
+    pixel: Option<pixel::Style>,
 }
 
 fn parse_class(s: &str) -> Option<Class> {
@@ -75,7 +77,7 @@ fn parse_class(s: &str) -> Option<Class> {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), at: None, ff: None, noedges: false };
+    let mut a = Args { shot: None, yaw: 0.0, dist: 5.4, metal: 0, duel: None, moves: Vec::new(), keys: String::new(), at: None, ff: None, noedges: false, pixel: None };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -93,6 +95,7 @@ fn parse_args() -> Args {
                 }
             }
             "--noedges" => a.noedges = true,
+            "--pixel" => a.pixel = it.next().and_then(|v| pixel::Style::parse(&v)),
             "--moves" => a.moves = it.next().unwrap_or_default().split(',').filter_map(|m| m.trim().parse().ok()).collect(),
             "--keys" => a.keys = it.next().unwrap_or_default(),
             "--at" => a.at = it.next().and_then(|v| v.parse().ok()),
@@ -420,6 +423,14 @@ async fn main() {
         let (eye, target) = effects::shaken(eye, target, world.shake.offset_in(right, right.cross(fwd)));
         let (sw, sh) = (screen_width(), screen_height());
         let cam = Cam::look_at(eye, target, 50.0, sw, sh);
+        if let (Some(style), Some(path)) = (args.pixel, &args.shot)
+            && frame == 6 + args.keys.chars().count() as u32
+        {
+            let img = pixel::render(style, scene, &world.fx, eye, target, 320, 200);
+            img.export_png(path);
+            eprintln!("saved {path}");
+            break;
+        }
 
         let fs = SIZES[size_i];
         let mut cw = (measure_text("MMMMMMMMMM", Some(&font), fs, 1.0).width / 10.0).round().max(4.0);
