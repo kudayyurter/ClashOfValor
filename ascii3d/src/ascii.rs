@@ -243,6 +243,21 @@ fn fill_glyph(scene: &Scene, cam: &Cam, hit: &Hit, sh: &Shade) -> (char, Vec3) {
     }
 }
 
+/// Chance that a grass cell far from the duel still draws a blade.
+pub fn grass_keep(dist: f32) -> f32 {
+    let f = ((dist - 3.0) / 9.0).clamp(0.0, 1.0);
+    let f = f * f * (3.0 - 2.0 * f);
+    let far = (1.0 - 0.65 * f).max(0.35);
+    // Beyond 12 m keep easing down to the floor.
+    (far - ((dist - 12.0).max(0.0) * 0.004)).max(0.25)
+}
+
+/// Grass brightness by distance from the duel, so the fighters stand out.
+pub fn grass_light(dist: f32) -> f32 {
+    let f = ((dist - 3.0) / 9.0).clamp(0.0, 1.0);
+    0.85 - 0.4 * f * f * (3.0 - 2.0 * f)
+}
+
 /// Grass: each cell is a blade whose lean comes from a wind field plus a push away from
 /// the player. Hashing on world position (not screen position) keeps the sparse
 /// cells and flowers from swimming when the camera moves.
@@ -260,8 +275,19 @@ fn grass_glyph(scene: &Scene, cam: &Cam, sh: &Shade) -> (char, Vec3) {
             lean += d.dot(cam.right) / dl * (1.4 - dl) * 2.0;
         }
     }
+    // Thin and darken the grass away from the duel so the fighters stand out.
+    let centre = match scene.bodies.as_slice() {
+        [a, b, ..] => (a.pos + b.pos) * 0.5,
+        _ => Vec3::ZERO,
+    };
+    let dist = vec3(p.x - centre.x, 0.0, p.z - centre.z).length();
+    let light = grass_light(dist);
+    let h2 = hash2((p.x * 20.0).floor() as i32 + 7919, (p.z * 20.0).floor() as i32 - 104_729);
+    if h2 > grass_keep(dist) {
+        return (if h2 > 0.985 || h < 0.35 { '.' } else { ' ' }, sh.rgb * light * 0.8);
+    }
     if h > 0.985 {
-        let flower = vec3(0.6, 0.75, 1.0) * (sh.lum * 2.5).min(1.0);
+        let flower = vec3(0.6, 0.75, 1.0) * (sh.lum * 2.5).min(1.0) * light;
         return (if h > 0.993 { 'o' } else { '*' }, flower);
     }
     let g = if h < 0.06 {
@@ -275,7 +301,7 @@ fn grass_glyph(scene: &Scene, cam: &Cam, sh: &Shade) -> (char, Vec3) {
     } else {
         '|'
     };
-    (g, sh.rgb)
+    (g, sh.rgb * light)
 }
 
 /// The surface coordinates of the hit, in the hero part's own frame.
@@ -455,5 +481,20 @@ mod tests {
             mask = next;
         }
         assert!(toggles <= 8, "{toggles} detail switches in a minute");
+    }
+
+    #[test]
+    fn grass_falls_off_with_distance() {
+        assert_eq!(grass_keep(0.0), 1.0);
+        assert_eq!(grass_keep(2.9), 1.0);
+        assert!(grass_keep(12.0) < 0.45);
+        assert!(grass_keep(100.0) >= 0.25);
+        let mut last = 1.0;
+        for i in 0..60 {
+            let k = grass_keep(i as f32 * 0.5);
+            assert!(k <= last + 1e-6, "not monotone at {}", i as f32 * 0.5);
+            last = k;
+        }
+        assert!(grass_light(0.0) > grass_light(12.0) + 0.3);
     }
 }
