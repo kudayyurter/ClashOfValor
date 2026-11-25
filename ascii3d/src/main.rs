@@ -283,7 +283,8 @@ async fn main() {
     }
     let mut script: std::collections::VecDeque<char> = args.keys.chars().collect();
     let mut bars: Option<[[f32; 3]; 2]> = None;
-    let (mut cam_yaw, mut cam_pitch, mut cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
+    // The camera distance is fixed: there is no zoom.
+    let (mut cam_yaw, mut cam_pitch, cam_dist) = (args.yaw.to_radians(), 0.3f32, args.dist);
     let mut size_i = 1usize;
     let mut opts = Opts { edges: !args.noedges, fine: true, fine_mask: [true, true] };
     let mut governor = FineGovernor::new();
@@ -313,10 +314,6 @@ async fn main() {
             cam_pitch = (cam_pitch + d.y * 0.006).clamp(0.08, 1.3);
         }
         last_mouse = m;
-        let wheel = mouse_wheel().1;
-        if wheel != 0.0 {
-            cam_dist = (cam_dist * if wheel > 0.0 { 0.9 } else { 1.1 }).clamp(3.0, 16.0);
-        }
         if hotkeys && is_key_pressed(KeyCode::M) {
             let b = &mut scene.bodies[active];
             b.metal = (b.metal + 1) % METALS.len();
@@ -494,7 +491,7 @@ fn draw_ui(font: &Font, opts: &Opts, fs: u16, cols: usize, rows: usize, deferred
         },
     );
     draw_text_ex(&info, 8.0, 15.0, tp(ui::DIM));
-    let help = "arrows/digits choose  Enter confirm  M/N armour  RMB orbit  wheel zoom  E edges  F fine  G glyphs  Esc quit";
+    let help = "arrows/digits choose  Enter confirm  M/N armour  RMB orbit  E edges  F fine  G glyphs  Esc quit";
     draw_rectangle(0.0, sh - 18.0, sw, 18.0, Color::new(0.0, 0.0, 0.0, 0.75));
     ui::text_centered(font, help, sw * 0.5, sh - 5.0, 12, Color::new(0.5, 0.52, 0.6, 1.0));
 }

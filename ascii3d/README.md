@@ -27,7 +27,7 @@ Controls:
 - Space or Enter skips the move animation.
 - M/N change the armour metal on a Warrior's turn.
 - E toggles outlines, F toggles the fine fighter grid, G cycles the glyph size, L toggles chainmail or plate legs.
-- Right-mouse drag orbits the camera and the wheel zooms.
+- Right-mouse drag orbits the camera. The camera always stays at the same distance; there is no zoom.
 - Esc quits.
 
 When frames get slow, only the fighter whose turn it is draws on the fine grid. The top bar shows `fine both`, `fine active` or `fine off`.
